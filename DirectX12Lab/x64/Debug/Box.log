@@ -1,0 +1,8 @@
+﻿  App.cpp
+  Camera.cpp
+  d3dApp.cpp
+  d3dUtil.cpp
+  GameTimer.cpp
+  MathHelper.cpp
+  Создание кода...
+  Box.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe
