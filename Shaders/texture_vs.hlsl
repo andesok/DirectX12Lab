@@ -1,6 +1,7 @@
 cbuffer cbPerObject : register(b0)
 {
     float4x4 gWorldViewProj;
+    float gTime; // Получаем время из C++
 };
 
 struct VertexIn
@@ -19,6 +20,13 @@ VertexOut VS(VertexIn vin)
 {
     VertexOut vout;
     vout.PosH = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
-    vout.TexCoord = vin.TexCoord;
+
+    // ТАЙЛИНГ
+    float2 tex = vin.TexCoord * 4.0f;
+
+    // АНИМАЦИЯ
+    tex.x += gTime * 1.0f;
+
+    vout.TexCoord = tex;
     return vout;
 }

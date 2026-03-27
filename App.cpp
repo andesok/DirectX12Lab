@@ -13,6 +13,10 @@
 #include "../DirectX12Lab/headers/UploadBuffer.h"
 #include "../DirectX12Lab/headers/DDSTextureLoader.h" 
 
+#define NOMINMAX
+#include <windows.h>
+#include "headers/tiny_obj_loader.h" 
+
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
 using namespace DirectX::PackedVector;
@@ -34,6 +38,8 @@ struct Vertex
 struct ObjectConstants
 {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
+    float gTime = 0.0f;
+    XMFLOAT3 padding;
 };
 
 class App : public D3DApp
@@ -59,13 +65,14 @@ private:
 	void BuildConstantBuffers();
     void BuildRootSignature();
     void BuildShadersAndInputLayout();
-    void BuildBoxGeometry();
     void BuildPSO();
 
     void BuildTextureHeap();
-    void LoadTexture();
+    void LoadTexture(std::wstring const texturePath);
     void CreateTextureSRV();
     void BuildSampler();
+
+    void BuildModelGeometry(std::string modelPath, std::string baseDir);
 
 private:
     
@@ -161,10 +168,9 @@ void App::BuildSampler()
     md3dDevice->CreateSampler(&samplerDesc, mSamplerHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
-void App::LoadTexture()
+void App::LoadTexture(std::wstring const texturePath)
 {
     mWoodTexture = std::make_unique<MeshTexture>();
-    std::wstring texturePath = L"Textures/WoodCrate01.dds";
 
     ThrowIfFailed(CreateDDSTextureFromFile12(
         md3dDevice.Get(),
@@ -201,11 +207,11 @@ bool App::Initialize()
 	BuildConstantBuffers();
     BuildRootSignature();
     BuildShadersAndInputLayout();
-    BuildBoxGeometry();
+    BuildModelGeometry("Models/Box.obj", "Models/");
     BuildPSO();
 
     BuildTextureHeap();
-    LoadTexture();
+    LoadTexture(L"Textures/WoodCrate01.dds");
     CreateTextureSRV();
     BuildSampler();
 
@@ -250,7 +256,10 @@ void App::Update(const GameTimer& gt)
 
 	// Update the constant buffer with the latest worldViewProj matrix.
 	ObjectConstants objConstants;
+
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
+    objConstants.gTime = gt.TotalTime();
+
     mObjectCB->CopyData(0, objConstants);
 }
 
@@ -273,7 +282,7 @@ void App::Draw(const GameTimer& gt)
 	mCommandList->ResourceBarrier(1, &transition);
 
     // Clear the back buffer and depth buffer.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::Black, 0, nullptr);
+    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
     mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 	
     // Specify the buffers we are going to render to.
@@ -307,7 +316,7 @@ void App::Draw(const GameTimer& gt)
     mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     mCommandList->DrawIndexedInstanced(
-		mBoxGeo->DrawArgs["box"].IndexCount, 
+		mBoxGeo->DrawArgs["model"].IndexCount, 
 		1, 0, 0, 0);
 	
     // Indicate a state transition on the resource usage.
@@ -466,78 +475,6 @@ void App::BuildShadersAndInputLayout()
     };
 }
 
-void App::BuildBoxGeometry()
-{
-    std::array<Vertex, 8> vertices =
-    {
-        Vertex({ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) }),
-        Vertex({ XMFLOAT3(-1.0f, +1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) }),
-        Vertex({ XMFLOAT3(+1.0f, +1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) }),
-        Vertex({ XMFLOAT3(+1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) }),
-        Vertex({ XMFLOAT3(-1.0f, -1.0f, +1.0f), XMFLOAT2(0.0f, 1.0f) }),
-        Vertex({ XMFLOAT3(-1.0f, +1.0f, +1.0f), XMFLOAT2(0.0f, 0.0f) }),
-        Vertex({ XMFLOAT3(+1.0f, +1.0f, +1.0f), XMFLOAT2(1.0f, 0.0f) }),
-        Vertex({ XMFLOAT3(+1.0f, -1.0f, +1.0f), XMFLOAT2(1.0f, 1.0f) })
-    };
-
-	std::array<std::uint16_t, 36> indices =
-	{
-		// front face
-		0, 1, 2,
-		0, 2, 3,
-
-		// back face
-		4, 6, 5,
-		4, 7, 6,
-
-		// left face
-		4, 5, 1,
-		4, 1, 0,
-
-		// right face
-		3, 2, 6,
-		3, 6, 7,
-
-		// top face
-		1, 5, 6,
-		1, 6, 2,
-
-		// bottom face
-		4, 0, 3,
-		4, 3, 7
-	};
-
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
-	const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint16_t);
-
-	mBoxGeo = std::make_unique<MeshGeometry>();
-	mBoxGeo->Name = "boxGeo";
-
-	ThrowIfFailed(D3DCreateBlob(vbByteSize, &mBoxGeo->VertexBufferCPU));
-	CopyMemory(mBoxGeo->VertexBufferCPU->GetBufferPointer(), vertices.data(), vbByteSize);
-
-	ThrowIfFailed(D3DCreateBlob(ibByteSize, &mBoxGeo->IndexBufferCPU));
-	CopyMemory(mBoxGeo->IndexBufferCPU->GetBufferPointer(), indices.data(), ibByteSize);
-
-	mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);
-
-	mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-		mCommandList.Get(), indices.data(), ibByteSize, mBoxGeo->IndexBufferUploader);
-
-	mBoxGeo->VertexByteStride = sizeof(Vertex);
-	mBoxGeo->VertexBufferByteSize = vbByteSize;
-	mBoxGeo->IndexFormat = DXGI_FORMAT_R16_UINT;
-	mBoxGeo->IndexBufferByteSize = ibByteSize;
-
-	SubmeshGeometry submesh;
-	submesh.IndexCount = (UINT)indices.size();
-	submesh.StartIndexLocation = 0;
-	submesh.BaseVertexLocation = 0;
-
-	mBoxGeo->DrawArgs["box"] = submesh;
-}
-
 void App::BuildPSO()
 {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
@@ -565,4 +502,107 @@ void App::BuildPSO()
     psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
     psoDesc.DSVFormat = mDepthStencilFormat;
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
+}
+
+void App::BuildModelGeometry(std::string modelPath, std::string baseDir) {
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warn, err;
+
+    // 1. Загружаем файл. 
+    // ВАЖНО: baseDir должен указывать на папку с .mtl (например, "Models/")
+    bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
+        modelPath.c_str(), baseDir.c_str());
+
+    if (!warn.empty()) {
+        OutputDebugStringA(warn.c_str());
+    }
+
+    if (!ret) {
+        // Если не загрузилось, выводим ошибку в консоль отладки
+        OutputDebugStringA(err.c_str());
+        return;
+    }
+
+    // Извлекаем имя текстуры ДО цикла по геометрии (чтобы загрузить один раз)
+    if (!materials.empty()) {
+        std::string texName = materials[0].diffuse_texname;
+        if (!texName.empty()) {
+            // Конвертируем string в wstring для DirectX
+            std::wstring wTexName(texName.begin(), texName.end());
+            // Загружаем текстуру (путь: папка Textures + имя из MTL)
+            LoadTexture(L"Textures/" + wTexName);
+        }
+    }
+
+    // 1. Загружаем файл
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, modelPath.c_str(), baseDir.c_str())) {
+        return;
+    }
+
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+
+    // 2. Обходим все части (shapes) модели
+    for (const auto& shape : shapes) {
+        for (const auto& index : shape.mesh.indices) {
+            Vertex v;
+
+            // Координаты вершин
+            v.Pos = {
+                attrib.vertices[3 * index.vertex_index + 0],
+                attrib.vertices[3 * index.vertex_index + 1],
+                attrib.vertices[3 * index.vertex_index + 2]
+            };
+
+            // Текстурные координаты (UV)
+            if (index.texcoord_index >= 0) {
+                v.TexCoord = {
+                    attrib.texcoords[2 * index.texcoord_index + 0],
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1] // Инвертируем Y для DirectX
+                };
+            }
+
+            vertices.push_back(v);
+            indices.push_back((std::uint32_t)indices.size());
+        }
+
+        // 3. Загрузка текстуры из материала (выполнение домашки по материалам)
+        if (!materials.empty()) {
+            // Берем текстуру из первого материала меша
+            std::string texName = materials[0].diffuse_texname;
+            if (!texName.empty()) {
+                std::wstring wTexName(texName.begin(), texName.end());
+                LoadTexture(L"Textures/" + wTexName);
+            }
+        }
+    }
+
+    // 4. Создание GPU буферов (копируем логику из вашего старого BuildBoxGeometry)
+    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
+    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint32_t);
+
+    mBoxGeo = std::make_unique<MeshGeometry>();
+    mBoxGeo->Name = "modelGeo";
+
+    // ... (стандартный код D3DCreateBlob и CopyMemory для VertexBuffer и IndexBuffer) ...
+
+    mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);
+
+    mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
+        mCommandList.Get(), indices.data(), ibByteSize, mBoxGeo->IndexBufferUploader);
+
+    mBoxGeo->VertexByteStride = sizeof(Vertex);
+    mBoxGeo->VertexBufferByteSize = vbByteSize;
+    mBoxGeo->IndexFormat = DXGI_FORMAT_R32_UINT; // Важно: 32-бит для моделей
+    mBoxGeo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry submesh;
+    submesh.IndexCount = (UINT)indices.size();
+    submesh.StartIndexLocation = 0;
+    submesh.BaseVertexLocation = 0;
+
+    mBoxGeo->DrawArgs["model"] = submesh;
 }
