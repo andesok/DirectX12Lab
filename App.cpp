@@ -12,6 +12,9 @@
 #include "../DirectX12Lab/headers/MathHelper.h"
 #include "../DirectX12Lab/headers/UploadBuffer.h"
 #include "../DirectX12Lab/headers/DDSTextureLoader.h" 
+#include "../DirectX12Lab/headers/RenderingSystem.h" 
+#include "../DirectX12Lab/headers/GBuffer.h"
+#include "../DirectX12Lab/headers/Camera.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -63,9 +66,6 @@ private:
 
     void BuildDescriptorHeaps();
 	void BuildConstantBuffers();
-    void BuildRootSignature();
-    void BuildShadersAndInputLayout();
-    void BuildPSO();
 
     void BuildTextureHeap();
     void LoadTexture(std::wstring const texturePath);
@@ -75,7 +75,7 @@ private:
     void BuildModelGeometry(std::string modelPath, std::string baseDir);
 
 private:
-    
+    std::unique_ptr<Camera> mCamera;
     ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
     ComPtr<ID3D12DescriptorHeap> mCbvHeap = nullptr;
 
@@ -100,9 +100,11 @@ private:
 
     POINT mLastMousePos;
 
-    std::unique_ptr<MeshTexture> mWoodTexture;
+    std::unique_ptr<MeshTexture> mTexture;
     ComPtr<ID3D12DescriptorHeap> mSrvHeap;
     ComPtr<ID3D12DescriptorHeap> mSamplerHeap;
+    std::unique_ptr<RenderingSystem> mRenderSystem;
+    std::unique_ptr<GBuffer> mGBuffer;
 };
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
@@ -170,21 +172,21 @@ void App::BuildSampler()
 
 void App::LoadTexture(std::wstring const texturePath)
 {
-    mWoodTexture = std::make_unique<MeshTexture>();
+    mTexture = std::make_unique<MeshTexture>();
 
     ThrowIfFailed(CreateDDSTextureFromFile12(
         md3dDevice.Get(),
         mCommandList.Get(),
         texturePath.c_str(),
-        mWoodTexture->Resource,
-        mWoodTexture->UploadHeap));
+        mTexture->Resource,
+        mTexture->UploadHeap));
 }
 
 void App::CreateTextureSRV()
 {
     D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = mWoodTexture->Resource->GetDesc().Format;
+    srvDesc.Format = mTexture->Resource->GetDesc().Format;
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = 1;
@@ -192,7 +194,7 @@ void App::CreateTextureSRV()
 
     auto handle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
     handle.ptr += md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    md3dDevice->CreateShaderResourceView(mWoodTexture->Resource.Get(), &srvDesc, handle);
+    md3dDevice->CreateShaderResourceView(mTexture->Resource.Get(), &srvDesc, handle);
 }
 
 bool App::Initialize()
@@ -202,18 +204,77 @@ bool App::Initialize()
 		
     // Reset the command list to prep for initialization commands.
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
- 
     BuildDescriptorHeaps();
+
+    DXGI_FORMAT gBufferFormats[3] = {
+    DXGI_FORMAT_R8G8B8A8_UNORM,      // Альбедо (цвет)
+    DXGI_FORMAT_R16G16B16A16_FLOAT,  // Нормали
+    DXGI_FORMAT_R16G16B16A16_FLOAT   // Мировая позиция
+    };
+
+    mRenderSystem = std::make_unique<RenderingSystem>(
+        md3dDevice.Get(),
+        gBufferFormats,
+        mDepthStencilFormat,
+        m4xMsaaState,
+        m4xMsaaQuality
+    );
+    mRenderSystem->Initialize();
+    mGBuffer = std::make_unique<GBuffer>(md3dDevice.Get(), mClientWidth, mClientHeight);
+    mGBuffer->BuildResources();
+
+    UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    UINT rtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+
+    int gBufferSrvOffset = 2;
+    int gBufferRtvOffset = 2;
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hCpuSrv(
+        mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
+        gBufferSrvOffset,
+        cbvSrvDescriptorSize);
+    CD3DX12_GPU_DESCRIPTOR_HANDLE hGpuSrv(
+        mCbvHeap->GetGPUDescriptorHandleForHeapStart(),
+        gBufferSrvOffset,
+        cbvSrvDescriptorSize);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hCpuRtv(
+        mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+        gBufferRtvOffset,
+        rtvDescriptorSize);
+
+    mGBuffer->BuildDescriptors(hCpuSrv, hGpuSrv, hCpuRtv);
+
+    for (UINT i = 0; i < SwapChainBufferCount; i++)
+    {
+        ComPtr<ID3D12Resource> backBuffer;
+        ThrowIfFailed(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer)));
+
+        // Получаем хендл для 0 и 1 слота
+        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
+            mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
+            i,
+            mRtvDescriptorSize);
+
+        // Создаем View (теперь в новой куче есть данные для слотов 0 и 1)
+        md3dDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvHandle);
+    }
+
 	BuildConstantBuffers();
-    BuildRootSignature();
-    BuildShadersAndInputLayout();
-    BuildModelGeometry("Models/Box.obj", "Models/");
-    BuildPSO();
+    BuildModelGeometry("Models/Sponza/sponza.obj", "Models/");
 
     BuildTextureHeap();
-    LoadTexture(L"Textures/WoodCrate01.dds");
+    LoadTexture(L"Models/Sponza/textures/lion.dds");
     CreateTextureSRV();
     BuildSampler();
+
+    mCamera = std::make_unique<Camera>();
+
+    // Начальная позиция (орбитальная)
+    float x = mRadius * sinf(mPhi) * cosf(mTheta);
+    float z = mRadius * sinf(mPhi) * sinf(mTheta);
+    float y = mRadius * cosf(mPhi);
+    mCamera->SetPosition(x, y, z);
+    mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
+    mCamera->LookAt(XMFLOAT3(x, y, z), XMFLOAT3(0, 0, 0), XMFLOAT3(0, 1, 0));
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
@@ -231,34 +292,36 @@ void App::OnResize()
 	D3DApp::OnResize();
 
     // The window resized, so update the aspect ratio and recompute the projection matrix.
-    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 1000.0f);
+    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 10000.0f);
     XMStoreFloat4x4(&mProj, P);
+
+    if (mCamera)
+    {
+        mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
+    }
 }
 
 void App::Update(const GameTimer& gt)
 {
-    // Convert Spherical to Cartesian coordinates.
-    float x = mRadius*sinf(mPhi)*cosf(mTheta);
-    float z = mRadius*sinf(mPhi)*sinf(mTheta);
-    float y = mRadius*cosf(mPhi);
+    if (!mCamera) return;
 
-    // Build the view matrix.
-    XMVECTOR pos = XMVectorSet(x, y, z, 1.0f);
-    XMVECTOR target = XMVectorZero();
-    XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+    // 2. Обновляем матрицу вида
+    mCamera->UpdateViewMatrix();
 
-    XMMATRIX view = XMMatrixLookAtLH(pos, target, up);
-    XMStoreFloat4x4(&mView, view);
+    // 3. Получаем матрицы для рендеринга
+
+    XMMATRIX view = mCamera->GetView();
+    XMMATRIX proj = mCamera->GetProj();
+
 
     XMMATRIX world = XMLoadFloat4x4(&mWorld);
-    XMMATRIX proj = XMLoadFloat4x4(&mProj);
-    XMMATRIX worldViewProj = world*view*proj;
+    XMMATRIX worldViewProj = world * view * proj;
 
 	// Update the constant buffer with the latest worldViewProj matrix.
 	ObjectConstants objConstants;
 
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
-    objConstants.gTime = gt.TotalTime();
+    //objConstants.gTime = gt.TotalTime();
 
     mObjectCB->CopyData(0, objConstants);
 }
@@ -290,35 +353,16 @@ void App::Draw(const GameTimer& gt)
 	auto dsv = DepthStencilView();
 	mCommandList->OMSetRenderTargets(1, &cbbv, true, &dsv);
 
-    ID3D12DescriptorHeap* descriptorHeaps[] = { mCbvHeap.Get(), mSamplerHeap.Get() };
-    mCommandList->SetDescriptorHeaps(2, descriptorHeaps);
+    mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect);
 
-    mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+    RenderItem modelItem;
+    modelItem.Mesh = mBoxGeo.get();
+    modelItem.SubmeshName = "model";
+    modelItem.CBIndex = 0;
+    modelItem.SRVIndex = 1;
 
-    // Получаем базовый дескриптор (начало кучи)
-    auto cbvSrvHandle = mCbvHeap->GetGPUDescriptorHandleForHeapStart();
-    UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mRenderSystem->DrawItem(mCommandList.Get(), modelItem, mCbvHeap.Get(), mSamplerHeap.Get());
 
-    // Параметр 0: CBV (лежит в начале кучи)
-    mCommandList->SetGraphicsRootDescriptorTable(0, cbvSrvHandle);
-
-    // Параметр 1: SRV (лежит вторым, смещаемся на размер одного дескриптора)
-    cbvSrvHandle.ptr += cbvSrvDescriptorSize;
-    mCommandList->SetGraphicsRootDescriptorTable(1, cbvSrvHandle);
-
-    // Параметр 2: Sampler (из отдельной кучи)
-    mCommandList->SetGraphicsRootDescriptorTable(2, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
-
-    auto vbv = mBoxGeo->VertexBufferView();
-    auto ibv = mBoxGeo->IndexBufferView();
-	mCommandList->IASetVertexBuffers(0, 1, &vbv);
-	mCommandList->IASetIndexBuffer(&ibv);
-    mCommandList->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    mCommandList->DrawIndexedInstanced(
-		mBoxGeo->DrawArgs["model"].IndexCount, 
-		1, 0, 0, 0);
-	
     // Indicate a state transition on the resource usage.
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -356,30 +400,21 @@ void App::OnMouseUp(WPARAM btnState, int x, int y)
 
 void App::OnMouseMove(WPARAM btnState, int x, int y)
 {
-    if((btnState & MK_LBUTTON) != 0)
+    float dx = static_cast<float>(x - mLastMousePos.x);
+    float dy = static_cast<float>(y - mLastMousePos.y);
+
+    float sensitivity = 0.005f;
+
+    if ((btnState & MK_LBUTTON) != 0)
     {
-        // Make each pixel correspond to a quarter of a degree.
-        float dx = XMConvertToRadians(0.25f*static_cast<float>(x - mLastMousePos.x));
-        float dy = XMConvertToRadians(0.25f*static_cast<float>(y - mLastMousePos.y));
-
-        // Update angles based on input to orbit camera around box.
-        mTheta += dx;
-        mPhi += dy;
-
-        // Restrict the angle mPhi.
-        mPhi = MathHelper::Clamp(mPhi, 0.1f, MathHelper::Pi - 0.1f);
+        mCamera->RotateY(-dx * sensitivity);
+        mCamera->Pitch(-dy * sensitivity);
     }
-    else if((btnState & MK_RBUTTON) != 0)
+
+    else if ((btnState & MK_RBUTTON) != 0)
     {
-        // Make each pixel correspond to 0.005 unit in the scene.
-        float dx = 0.005f*static_cast<float>(x - mLastMousePos.x);
-        float dy = 0.005f*static_cast<float>(y - mLastMousePos.y);
-
-        // Update the camera radius based on input.
-        mRadius += dx - dy;
-
-        // Restrict the radius.
-        mRadius = MathHelper::Clamp(mRadius, 3.0f, 15.0f);
+        float zoomSpeed = 5.0f;
+        mCamera->Walk(dx * zoomSpeed);
     }
 
     mLastMousePos.x = x;
@@ -389,12 +424,20 @@ void App::OnMouseMove(WPARAM btnState, int x, int y)
 void App::BuildDescriptorHeaps()
 {
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
-    cbvHeapDesc.NumDescriptors = 2;
+    cbvHeapDesc.NumDescriptors = 10;
     cbvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     cbvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	cbvHeapDesc.NodeMask = 0;
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,
         IID_PPV_ARGS(&mCbvHeap)));
+
+    // 2. Куча для RTV (SwapChain + G-буфер)
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    // Нужно: 2 (SwapChain) + 3 (G-буфер) = 5
+    rtvHeapDesc.NumDescriptors = 5;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRtvHeap)));
 }
 
 void App::BuildConstantBuffers()
@@ -413,95 +456,6 @@ void App::BuildConstantBuffers()
 	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
     md3dDevice->CreateConstantBufferView(&cbvDesc, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
-}
-
-void App::BuildRootSignature()
-{
-	// Shader programs typically require resources as input (constant buffers,
-	// textures, samplers).  The root signature defines the resources the shader
-	// programs expect.  If we think of the shader programs as a function, and
-	// the input resources as function parameters, then the root signature can be
-	// thought of as defining the function signature.  
-
-	// Root parameter can be a table, root descriptor or root constants.
-	CD3DX12_ROOT_PARAMETER slotRootParameter[3];
-
-
-    CD3DX12_DESCRIPTOR_RANGE cbvTable;
-    cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-    slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
-
-    CD3DX12_DESCRIPTOR_RANGE srvTable;
-    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
-    slotRootParameter[1].InitAsDescriptorTable(1, &srvTable);
-
-    CD3DX12_DESCRIPTOR_RANGE samplerTable;
-    samplerTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);
-    slotRootParameter[2].InitAsDescriptorTable(1, &samplerTable);
-
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(3, slotRootParameter, 0, nullptr,
-        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-	// create a root signature with a single slot which points to a descriptor range consisting of a single constant buffer
-	ComPtr<ID3DBlob> serializedRootSig = nullptr;
-	ComPtr<ID3DBlob> errorBlob = nullptr;
-	HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
-		serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
-
-	if(errorBlob != nullptr)
-	{
-		::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
-	}
-	ThrowIfFailed(hr);
-
-	ThrowIfFailed(md3dDevice->CreateRootSignature(
-		0,
-		serializedRootSig->GetBufferPointer(),
-		serializedRootSig->GetBufferSize(),
-		IID_PPV_ARGS(&mRootSignature)));
-}
-
-void App::BuildShadersAndInputLayout()
-{
-    HRESULT hr = S_OK;
-    
-    mvsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_vs.hlsl", nullptr, "VS", "vs_5_0");
-    mpsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_ps.hlsl", nullptr, "PS", "ps_5_0");
-
-    mInputLayout =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-}
-
-void App::BuildPSO()
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
-    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-    psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
-    psoDesc.pRootSignature = mRootSignature.Get();
-    psoDesc.VS = 
-	{ 
-		reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()), 
-		mvsByteCode->GetBufferSize() 
-	};
-    psoDesc.PS = 
-	{ 
-		reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()), 
-		mpsByteCode->GetBufferSize() 
-	};
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mBackBufferFormat;
-    psoDesc.SampleDesc.Count = m4xMsaaState ? 4 : 1;
-    psoDesc.SampleDesc.Quality = m4xMsaaState ? (m4xMsaaQuality - 1) : 0;
-    psoDesc.DSVFormat = mDepthStencilFormat;
-    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
 }
 
 void App::BuildModelGeometry(std::string modelPath, std::string baseDir) {
