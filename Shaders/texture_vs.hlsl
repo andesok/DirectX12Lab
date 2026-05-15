@@ -22,10 +22,7 @@ VertexOut VS(VertexIn vin)
     vout.PosH = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
 
     // ТАЙЛИНГ
-    float2 tex = vin.TexCoord * 4.0f;
-
-    // АНИМАЦИЯ
-    tex.x += gTime * 1.0f;
+    float2 tex = vin.TexCoord * 1.0f;
 
     vout.TexCoord = tex;
     return vout;

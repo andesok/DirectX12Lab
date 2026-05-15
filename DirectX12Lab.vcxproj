@@ -146,28 +146,30 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="App.cpp" />
+    <ClCompile Include="framework\ModelLoader.cpp" />
     <ClCompile Include="src\Camera.cpp" />
-    <ClCompile Include="src\d3dApp.cpp" />
-    <ClCompile Include="src\d3dUtil.cpp" />
-    <ClCompile Include="src\DDSTextureLoader.cpp" />
-    <ClCompile Include="src\GameTimer.cpp" />
-    <ClCompile Include="src\GBuffer.cpp" />
-    <ClCompile Include="src\MathHelper.cpp" />
-    <ClCompile Include="src\RenderingSystem.cpp" />
-    <ClCompile Include="src\tiny_obj_loader.cpp" />
+    <ClCompile Include="framework\d3dApp.cpp" />
+    <ClCompile Include="framework\d3dUtil.cpp" />
+    <ClCompile Include="framework\DDSTextureLoader.cpp" />
+    <ClCompile Include="framework\GameTimer.cpp" />
+    <ClCompile Include="framework\GBuffer.cpp" />
+    <ClCompile Include="framework\MathHelper.cpp" />
+    <ClCompile Include="framework\RenderingSystem.cpp" />
+    <ClCompile Include="framework\tiny_obj_loader.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="framework\ModelLoader.h" />
     <ClInclude Include="headers\Camera.h" />
-    <ClInclude Include="headers\d3dApp.h" />
-    <ClInclude Include="headers\d3dUtil.h" />
-    <ClInclude Include="headers\d3dx12.h" />
-    <ClInclude Include="headers\DDSTextureLoader.h" />
-    <ClInclude Include="headers\GameTimer.h" />
-    <ClInclude Include="headers\GBuffer.h" />
-    <ClInclude Include="headers\MathHelper.h" />
-    <ClInclude Include="headers\RenderingSystem.h" />
-    <ClInclude Include="headers\tiny_obj_loader.h" />
-    <ClInclude Include="headers\UploadBuffer.h" />
+    <ClInclude Include="framework\d3dApp.h" />
+    <ClInclude Include="framework\d3dUtil.h" />
+    <ClInclude Include="framework\d3dx12.h" />
+    <ClInclude Include="framework\DDSTextureLoader.h" />
+    <ClInclude Include="framework\GameTimer.h" />
+    <ClInclude Include="framework\GBuffer.h" />
+    <ClInclude Include="framework\MathHelper.h" />
+    <ClInclude Include="framework\RenderingSystem.h" />
+    <ClInclude Include="framework\tiny_obj_loader.h" />
+    <ClInclude Include="framework\UploadBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\texture_ps.hlsl">

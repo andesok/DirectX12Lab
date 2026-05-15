@@ -1,24 +1,14 @@
-//***************************************************************************************
-// BoxApp.cpp by Frank Luna (C) 2015 All Rights Reserved.
-//
-// Shows how to draw a box in Direct3D 12.
-//
-// Controls:
-//   Hold the left mouse button down and move the mouse to rotate.
-//   Hold the right mouse button down and move the mouse to zoom in and out.
-//***************************************************************************************
-
-#include "../DirectX12Lab/headers/d3dApp.h"
-#include "../DirectX12Lab/headers/MathHelper.h"
-#include "../DirectX12Lab/headers/UploadBuffer.h"
-#include "../DirectX12Lab/headers/DDSTextureLoader.h" 
-#include "../DirectX12Lab/headers/RenderingSystem.h" 
-#include "../DirectX12Lab/headers/GBuffer.h"
+#include "../DirectX12Lab/framework/d3dApp.h"
+#include "../DirectX12Lab/framework/MathHelper.h"
+#include "../DirectX12Lab/framework/UploadBuffer.h"
+#include "../DirectX12Lab/framework/DDSTextureLoader.h" 
+#include "../DirectX12Lab/framework/RenderingSystem.h" 
+#include "../DirectX12Lab/framework/GBuffer.h"
 #include "../DirectX12Lab/headers/Camera.h"
 
 #define NOMINMAX
 #include <windows.h>
-#include "headers/tiny_obj_loader.h" 
+#include "../DirectX12Lab/framework/tiny_obj_loader.h" 
 
 using Microsoft::WRL::ComPtr;
 using namespace DirectX;
@@ -30,6 +20,13 @@ struct MeshTexture
     std::wstring Filename;
     ComPtr<ID3D12Resource> Resource = nullptr;
     ComPtr<ID3D12Resource> UploadHeap = nullptr;
+};
+
+struct SubMeshInfo {
+    std::string name;          // имя shape из .obj
+    UINT indexCount;           // сколько индексов у этого меша
+    UINT startIndex;           // с какого места в общем буфере начинается
+    std::wstring texturePath;  // путь к его текстуре
 };
 
 struct Vertex
@@ -81,7 +78,7 @@ private:
 
     std::unique_ptr<UploadBuffer<ObjectConstants>> mObjectCB = nullptr;
 
-	std::unique_ptr<MeshGeometry> mBoxGeo = nullptr;
+	std::unique_ptr<MeshGeometry> mGeo = nullptr;
 
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsByteCode = nullptr;
@@ -99,7 +96,7 @@ private:
     float mRadius = 5.0f;
 
     POINT mLastMousePos;
-
+    std::vector<SubMeshInfo> mSubMeshInfos;
     std::unique_ptr<MeshTexture> mTexture;
     ComPtr<ID3D12DescriptorHeap> mSrvHeap;
     ComPtr<ID3D12DescriptorHeap> mSamplerHeap;
@@ -190,11 +187,15 @@ void App::CreateTextureSRV()
     srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srvDesc.Texture2D.MostDetailedMip = 0;
     srvDesc.Texture2D.MipLevels = 1;
-    srvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
 
-    auto handle = mCbvHeap->GetCPUDescriptorHandleForHeapStart();
-    handle.ptr += md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    md3dDevice->CreateShaderResourceView(mTexture->Resource.Get(), &srvDesc, handle);
+    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
+        mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
+        1,
+        descriptorSize);
+
+    md3dDevice->CreateShaderResourceView(mTexture->Resource.Get(), &srvDesc, hDescriptor);
 }
 
 bool App::Initialize()
@@ -202,7 +203,6 @@ bool App::Initialize()
     if(!D3DApp::Initialize())
 		return false;
 		
-    // Reset the command list to prep for initialization commands.
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
     BuildDescriptorHeaps();
 
@@ -241,7 +241,7 @@ bool App::Initialize()
         gBufferRtvOffset,
         rtvDescriptorSize);
 
-    mGBuffer->BuildDescriptors(hCpuSrv, hGpuSrv, hCpuRtv);
+    //mGBuffer->BuildDescriptors(hCpuSrv, hGpuSrv, hCpuRtv);
 
     for (UINT i = 0; i < SwapChainBufferCount; i++)
     {
@@ -265,6 +265,7 @@ bool App::Initialize()
     LoadTexture(L"Models/Sponza/textures/lion.dds");
     CreateTextureSRV();
     BuildSampler();
+
 
     mCamera = std::make_unique<Camera>();
 
@@ -321,68 +322,57 @@ void App::Update(const GameTimer& gt)
 	ObjectConstants objConstants;
 
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
-    //objConstants.gTime = gt.TotalTime();
+    objConstants.gTime = gt.TotalTime();
 
     mObjectCB->CopyData(0, objConstants);
 }
 
 void App::Draw(const GameTimer& gt)
 {
-    // Reuse the memory associated with command recording.
-    // We can only reset when the associated command lists have finished execution on the GPU.
-	ThrowIfFailed(mDirectCmdListAlloc->Reset());
-
-	// A command list can be reset after it has been added to the command queue via ExecuteCommandList.
-    // Reusing the command list reuses memory.
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), mPSO.Get()));
+    ThrowIfFailed(mDirectCmdListAlloc->Reset());
+    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr)); // ← убрал mPSO.Get()
 
     mCommandList->RSSetViewports(1, &mScreenViewport);
     mCommandList->RSSetScissorRects(1, &mScissorRect);
 
-    // Indicate a state transition on the resource usage.
     auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-	mCommandList->ResourceBarrier(1, &transition);
+    mCommandList->ResourceBarrier(1, &transition);
 
-    // Clear the back buffer and depth buffer.
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::LightSteelBlue, 0, nullptr);
+    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::CornflowerBlue, 0, nullptr);
     mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-	
-    // Specify the buffers we are going to render to.
-	auto cbbv = CurrentBackBufferView();
-	auto dsv = DepthStencilView();
-	mCommandList->OMSetRenderTargets(1, &cbbv, true, &dsv);
+
+    auto cbbv = CurrentBackBufferView();
+    auto dsv = DepthStencilView();
+    mCommandList->OMSetRenderTargets(1, &cbbv, true, &dsv);
 
     mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect);
 
-    RenderItem modelItem;
-    modelItem.Mesh = mBoxGeo.get();
-    modelItem.SubmeshName = "model";
-    modelItem.CBIndex = 0;
-    modelItem.SRVIndex = 1;
+    // ← ИСПРАВЛЕНО: рисуем ВСЕ submesh'и
+    for (auto& pair : mGeo->DrawArgs)
+    {
+        RenderItem item;
+        item.Mesh = mGeo.get();
+        item.SubmeshName = pair.first;  // используем реальное имя из DrawArgs
+        item.CBIndex = 0;
+        item.SRVIndex = 1;  // пока все используют одну текстуру
 
-    mRenderSystem->DrawItem(mCommandList.Get(), modelItem, mCbvHeap.Get(), mSamplerHeap.Get());
+        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get());
+    }
 
-    // Indicate a state transition on the resource usage.
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
-	mCommandList->ResourceBarrier(1, &transition);
+    mCommandList->ResourceBarrier(1, &transition);
 
-    // Done recording commands.
-	ThrowIfFailed(mCommandList->Close());
- 
-    // Add the command list to the queue for execution.
-	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
-	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
-	
-	// swap the back and front buffers
-	ThrowIfFailed(mSwapChain->Present(0, 0));
-	mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
+    ThrowIfFailed(mCommandList->Close());
 
-	// Wait until frame commands are complete.  This waiting is inefficient and is
-	// done for simplicity.  Later we will show how to organize our rendering code
-	// so we do not have to wait per frame.
-	FlushCommandQueue();
+    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+
+    ThrowIfFailed(mSwapChain->Present(0, 0));
+    mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
+
+    FlushCommandQueue();
 }
 
 void App::OnMouseDown(WPARAM btnState, int x, int y)
@@ -458,105 +448,84 @@ void App::BuildConstantBuffers()
     md3dDevice->CreateConstantBufferView(&cbvDesc, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
-void App::BuildModelGeometry(std::string modelPath, std::string baseDir) {
+void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
+{
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
     std::vector<tinyobj::material_t> materials;
     std::string warn, err;
 
-    // 1. Загружаем файл. 
-    // ВАЖНО: baseDir должен указывать на папку с .mtl (например, "Models/")
     bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err,
         modelPath.c_str(), baseDir.c_str());
 
-    if (!warn.empty()) {
-        OutputDebugStringA(warn.c_str());
-    }
-
     if (!ret) {
-        // Если не загрузилось, выводим ошибку в консоль отладки
         OutputDebugStringA(err.c_str());
         return;
     }
 
-    // Извлекаем имя текстуры ДО цикла по геометрии (чтобы загрузить один раз)
-    if (!materials.empty()) {
-        std::string texName = materials[0].diffuse_texname;
-        if (!texName.empty()) {
-            // Конвертируем string в wstring для DirectX
-            std::wstring wTexName(texName.begin(), texName.end());
-            // Загружаем текстуру (путь: папка Textures + имя из MTL)
-            LoadTexture(L"Textures/" + wTexName);
-        }
-    }
+    mGeo = std::make_unique<MeshGeometry>();
+    mGeo->Name = "Sponza";
 
-    // 1. Загружаем файл
-    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, modelPath.c_str(), baseDir.c_str())) {
-        return;
-    }
+    std::vector<Vertex> allVertices;
+    std::vector<std::uint32_t> allIndices;
 
-    std::vector<Vertex> vertices;
-    std::vector<std::uint32_t> indices;
+    for (size_t shapeIdx = 0; shapeIdx < shapes.size(); ++shapeIdx)
+    {
+        const auto& shape = shapes[shapeIdx];
 
-    // 2. Обходим все части (shapes) модели
-    for (const auto& shape : shapes) {
-        for (const auto& index : shape.mesh.indices) {
+        UINT startVertex = (UINT)allVertices.size();  // <-- Запоминаем начало ВЕРШИН
+        UINT startIndex = (UINT)allIndices.size();     // <-- Запоминаем начало ИНДЕКСОВ
+
+        for (const auto& index : shape.mesh.indices)
+        {
             Vertex v;
-
-            // Координаты вершин
             v.Pos = {
                 attrib.vertices[3 * index.vertex_index + 0],
                 attrib.vertices[3 * index.vertex_index + 1],
                 attrib.vertices[3 * index.vertex_index + 2]
             };
 
-            // Текстурные координаты (UV)
             if (index.texcoord_index >= 0) {
                 v.TexCoord = {
                     attrib.texcoords[2 * index.texcoord_index + 0],
-                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1] // Инвертируем Y для DirectX
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
                 };
             }
-
-            vertices.push_back(v);
-            indices.push_back((std::uint32_t)indices.size());
-        }
-
-        // 3. Загрузка текстуры из материала (выполнение домашки по материалам)
-        if (!materials.empty()) {
-            // Берем текстуру из первого материала меша
-            std::string texName = materials[0].diffuse_texname;
-            if (!texName.empty()) {
-                std::wstring wTexName(texName.begin(), texName.end());
-                LoadTexture(L"Textures/" + wTexName);
+            else {
+                v.TexCoord = { 0.0f, 0.0f };
             }
+
+            allVertices.push_back(v);
+            allIndices.push_back((UINT)(startVertex + allIndices.size() - startIndex));
+            // Индексы должны ссылаться на правильные вершины
         }
+
+        SubmeshGeometry submesh;
+        submesh.IndexCount = (UINT)shape.mesh.indices.size();
+        submesh.StartIndexLocation = startIndex;
+        submesh.BaseVertexLocation = 0;  // Можно 0, если индексы правильные
+
+        std::string submeshName = shape.name.empty()
+            ? "submesh_" + std::to_string(shapeIdx)
+            : shape.name;
+
+        mGeo->DrawArgs[submeshName] = submesh;
     }
 
-    // 4. Создание GPU буферов (копируем логику из вашего старого BuildBoxGeometry)
-    const UINT vbByteSize = (UINT)vertices.size() * sizeof(Vertex);
-    const UINT ibByteSize = (UINT)indices.size() * sizeof(std::uint32_t);
+    // Создаём GPU буферы
+    const UINT vbByteSize = (UINT)allVertices.size() * sizeof(Vertex);
+    const UINT ibByteSize = (UINT)allIndices.size() * sizeof(std::uint32_t);
 
-    mBoxGeo = std::make_unique<MeshGeometry>();
-    mBoxGeo->Name = "modelGeo";
+    mGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(
+        md3dDevice.Get(), mCommandList.Get(),
+        allVertices.data(), vbByteSize, mGeo->VertexBufferUploader);
 
-    // ... (стандартный код D3DCreateBlob и CopyMemory для VertexBuffer и IndexBuffer) ...
+    mGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(
+        md3dDevice.Get(), mCommandList.Get(),
+        allIndices.data(), ibByteSize, mGeo->IndexBufferUploader);
 
-    mBoxGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-        mCommandList.Get(), vertices.data(), vbByteSize, mBoxGeo->VertexBufferUploader);
-
-    mBoxGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(),
-        mCommandList.Get(), indices.data(), ibByteSize, mBoxGeo->IndexBufferUploader);
-
-    mBoxGeo->VertexByteStride = sizeof(Vertex);
-    mBoxGeo->VertexBufferByteSize = vbByteSize;
-    mBoxGeo->IndexFormat = DXGI_FORMAT_R32_UINT; // Важно: 32-бит для моделей
-    mBoxGeo->IndexBufferByteSize = ibByteSize;
-
-    SubmeshGeometry submesh;
-    submesh.IndexCount = (UINT)indices.size();
-    submesh.StartIndexLocation = 0;
-    submesh.BaseVertexLocation = 0;
-
-    mBoxGeo->DrawArgs["model"] = submesh;
+    mGeo->VertexByteStride = sizeof(Vertex);
+    mGeo->VertexBufferByteSize = vbByteSize;
+    mGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
+    mGeo->IndexBufferByteSize = ibByteSize;
 }
