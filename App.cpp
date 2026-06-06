@@ -305,6 +305,34 @@ void App::OnResize()
 void App::Update(const GameTimer& gt)
 {
     if (!mCamera) return;
+    float dt = gt.DeltaTime();
+    float speed = 400.0f * dt; // Скорость полета (юнитов в секунду)
+
+    // БЫЛО В ПРОЕКТЕ: Получаем векторы направления (они возвращают XMVECTOR)
+    DirectX::XMVECTOR look = mCamera->GetLook();
+    DirectX::XMVECTOR right = mCamera->GetRight();
+    DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f); // Мировой "вверх"
+
+    // ИЗМЕНЕНО: Берем позицию сразу в формате XMFLOAT3, используя метод твоего класса
+    DirectX::XMFLOAT3 currentPos3f = mCamera->GetPosition3f();
+    // Загружаем её в XMVECTOR для проведения быстрой векторной математики
+    DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&currentPos3f);
+
+    // ДОБАВЛЕНО: Опрос клавиш и смещение вектора позиции
+    if (d3dUtil::IsKeyDown('W')) pos += look * speed;
+    if (d3dUtil::IsKeyDown('S')) pos -= look * speed;
+    if (d3dUtil::IsKeyDown('A')) pos -= right * speed;
+    if (d3dUtil::IsKeyDown('D')) pos += right * speed;
+
+    if (d3dUtil::IsKeyDown('E')) pos += up * speed;
+    if (d3dUtil::IsKeyDown('Q')) pos -= up * speed;
+
+    // ДОБАВЛЕНО: Сохраняем результат обратно в структуру XMFLOAT3
+    DirectX::XMFLOAT3 newPos;
+    DirectX::XMStoreFloat3(&newPos, pos);
+
+    // ИСПОЛЬЗУЕМ СУЩЕСТВУЮЩИЙ МЕТОД: Теперь типы точно совпадают (XMFLOAT3 -> XMFLOAT3)
+    mCamera->SetPosition(newPos);
 
     // 2. Обновляем матрицу вида
     mCamera->UpdateViewMatrix();
@@ -397,8 +425,8 @@ void App::OnMouseMove(WPARAM btnState, int x, int y)
 
     if ((btnState & MK_LBUTTON) != 0)
     {
-        mCamera->RotateY(-dx * sensitivity);
-        mCamera->Pitch(-dy * sensitivity);
+        mCamera->RotateY(dx * sensitivity);
+        mCamera->Pitch(dy * sensitivity);
     }
 
     else if ((btnState & MK_RBUTTON) != 0)
