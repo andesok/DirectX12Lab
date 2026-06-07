@@ -27,13 +27,6 @@ RenderingSystem::~RenderingSystem() {}
 
 void RenderingSystem::BuildRootSignature()
 {
-    // Shader programs typically require resources as input (constant buffers,
-    // textures, samplers).  The root signature defines the resources the shader
-    // programs expect.  If we think of the shader programs as a function, and
-    // the input resources as function parameters, then the root signature can be
-    // thought of as defining the function signature.  
-
-    // Root parameter can be a table, root descriptor or root constants.
     CD3DX12_ROOT_PARAMETER slotRootParameter[3];
 
 
@@ -127,28 +120,23 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* mainHeap,
     ID3D12DescriptorHeap* samplerHeap)
 {
-    // 1. Устанавливаем кучи (CBV_SRV_UAV и Sampler)
+
     ID3D12DescriptorHeap* heaps[] = { mainHeap, samplerHeap };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    // 2. Рассчитываем смещения в куче для текущего объекта
     auto handle = mainHeap->GetGPUDescriptorHandleForHeapStart();
     UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Привязываем CBV (константы: World, Time, Tiling)
     auto cbvHandle = handle;
     cbvHandle.ptr += item.CBIndex * descriptorSize;
     cmdList->SetGraphicsRootDescriptorTable(0, cbvHandle);
 
-    // Привязываем SRV (Текстура материала из OBJ)
     auto srvHandle = handle;
     srvHandle.ptr += item.SRVIndex * descriptorSize;
     cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
 
-    // 3. Привязываем Sampler (всегда в начале своей кучи)
     cmdList->SetGraphicsRootDescriptorTable(2, samplerHeap->GetGPUDescriptorHandleForHeapStart());
 
-    // 4. Отрисовка геометрии
     auto vbv = item.Mesh->VertexBufferView();
     auto ibv = item.Mesh->IndexBufferView();
     cmdList->IASetVertexBuffers(0, 1, &vbv);
@@ -156,5 +144,6 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     auto& submesh = item.Mesh->DrawArgs[item.SubmeshName];
-    cmdList->DrawIndexedInstanced(submesh.IndexCount, 1, 0, 0, 0);
+
+    cmdList->DrawIndexedInstanced(submesh.IndexCount, 1, submesh.StartIndexLocation, submesh.BaseVertexLocation, 0);
 }

@@ -23,10 +23,10 @@ struct MeshTexture
 };
 
 struct SubMeshInfo {
-    std::string name;          // имя shape из .obj
-    UINT indexCount;           // сколько индексов у этого меша
-    UINT startIndex;           // с какого места в общем буфере начинается
-    std::wstring texturePath;  // путь к его текстуре
+    std::string name;
+    UINT indexCount;
+    UINT startIndex;
+    std::wstring texturePath;
 };
 
 struct Vertex
@@ -107,7 +107,6 @@ private:
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE prevInstance,
 				   PSTR cmdLine, int showCmd)
 {
-	// Enable run-time memory check for debug builds.
 #if defined(DEBUG) | defined(_DEBUG)
 	_CrtSetDbgFlag( _CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF );
 #endif
@@ -207,9 +206,9 @@ bool App::Initialize()
     BuildDescriptorHeaps();
 
     DXGI_FORMAT gBufferFormats[3] = {
-    DXGI_FORMAT_R8G8B8A8_UNORM,      // Альбедо (цвет)
-    DXGI_FORMAT_R16G16B16A16_FLOAT,  // Нормали
-    DXGI_FORMAT_R16G16B16A16_FLOAT   // Мировая позиция
+    DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R16G16B16A16_FLOAT,
+    DXGI_FORMAT_R16G16B16A16_FLOAT
     };
 
     mRenderSystem = std::make_unique<RenderingSystem>(
@@ -248,13 +247,11 @@ bool App::Initialize()
         ComPtr<ID3D12Resource> backBuffer;
         ThrowIfFailed(mSwapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffer)));
 
-        // Получаем хендл для 0 и 1 слота
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(
             mRtvHeap->GetCPUDescriptorHandleForHeapStart(),
             i,
             mRtvDescriptorSize);
 
-        // Создаем View (теперь в новой куче есть данные для слотов 0 и 1)
         md3dDevice->CreateRenderTargetView(backBuffer.Get(), nullptr, rtvHandle);
     }
 
@@ -306,19 +303,16 @@ void App::Update(const GameTimer& gt)
 {
     if (!mCamera) return;
     float dt = gt.DeltaTime();
-    float speed = 400.0f * dt; // Скорость полета (юнитов в секунду)
+    float speed = 400.0f * dt;
 
-    // БЫЛО В ПРОЕКТЕ: Получаем векторы направления (они возвращают XMVECTOR)
     DirectX::XMVECTOR look = mCamera->GetLook();
     DirectX::XMVECTOR right = mCamera->GetRight();
-    DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f); // Мировой "вверх"
+    DirectX::XMVECTOR up = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
-    // ИЗМЕНЕНО: Берем позицию сразу в формате XMFLOAT3, используя метод твоего класса
     DirectX::XMFLOAT3 currentPos3f = mCamera->GetPosition3f();
-    // Загружаем её в XMVECTOR для проведения быстрой векторной математики
+
     DirectX::XMVECTOR pos = DirectX::XMLoadFloat3(&currentPos3f);
 
-    // ДОБАВЛЕНО: Опрос клавиш и смещение вектора позиции
     if (d3dUtil::IsKeyDown('W')) pos += look * speed;
     if (d3dUtil::IsKeyDown('S')) pos -= look * speed;
     if (d3dUtil::IsKeyDown('A')) pos -= right * speed;
@@ -327,17 +321,12 @@ void App::Update(const GameTimer& gt)
     if (d3dUtil::IsKeyDown('E')) pos += up * speed;
     if (d3dUtil::IsKeyDown('Q')) pos -= up * speed;
 
-    // ДОБАВЛЕНО: Сохраняем результат обратно в структуру XMFLOAT3
     DirectX::XMFLOAT3 newPos;
     DirectX::XMStoreFloat3(&newPos, pos);
 
-    // ИСПОЛЬЗУЕМ СУЩЕСТВУЮЩИЙ МЕТОД: Теперь типы точно совпадают (XMFLOAT3 -> XMFLOAT3)
     mCamera->SetPosition(newPos);
 
-    // 2. Обновляем матрицу вида
     mCamera->UpdateViewMatrix();
-
-    // 3. Получаем матрицы для рендеринга
 
     XMMATRIX view = mCamera->GetView();
     XMMATRIX proj = mCamera->GetProj();
@@ -346,7 +335,6 @@ void App::Update(const GameTimer& gt)
     XMMATRIX world = XMLoadFloat4x4(&mWorld);
     XMMATRIX worldViewProj = world * view * proj;
 
-	// Update the constant buffer with the latest worldViewProj matrix.
 	ObjectConstants objConstants;
 
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
@@ -358,7 +346,7 @@ void App::Update(const GameTimer& gt)
 void App::Draw(const GameTimer& gt)
 {
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
-    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr)); // ← убрал mPSO.Get()
+    ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
     mCommandList->RSSetViewports(1, &mScreenViewport);
     mCommandList->RSSetScissorRects(1, &mScissorRect);
@@ -376,15 +364,13 @@ void App::Draw(const GameTimer& gt)
 
     mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect);
 
-    // ← ИСПРАВЛЕНО: рисуем ВСЕ submesh'и
     for (auto& pair : mGeo->DrawArgs)
     {
         RenderItem item;
         item.Mesh = mGeo.get();
-        item.SubmeshName = pair.first;  // используем реальное имя из DrawArgs
+        item.SubmeshName = pair.first;
         item.CBIndex = 0;
-        item.SRVIndex = 1;  // пока все используют одну текстуру
-
+        item.SRVIndex = 1;
         mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get());
     }
 
@@ -449,9 +435,8 @@ void App::BuildDescriptorHeaps()
     ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&cbvHeapDesc,
         IID_PPV_ARGS(&mCbvHeap)));
 
-    // 2. Куча для RTV (SwapChain + G-буфер)
     D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-    // Нужно: 2 (SwapChain) + 3 (G-буфер) = 5
+
     rtvHeapDesc.NumDescriptors = 5;
     rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
@@ -501,8 +486,8 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
     {
         const auto& shape = shapes[shapeIdx];
 
-        UINT startVertex = (UINT)allVertices.size();  // <-- Запоминаем начало ВЕРШИН
-        UINT startIndex = (UINT)allIndices.size();     // <-- Запоминаем начало ИНДЕКСОВ
+        UINT startVertex = (UINT)allVertices.size();
+        UINT startIndex = (UINT)allIndices.size();
 
         for (const auto& index : shape.mesh.indices)
         {
@@ -524,14 +509,15 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
             }
 
             allVertices.push_back(v);
-            allIndices.push_back((UINT)(startVertex + allIndices.size() - startIndex));
-            // Индексы должны ссылаться на правильные вершины
+        }
+        for (size_t i = 0; i < shape.mesh.indices.size(); ++i) {
+            allIndices.push_back(startVertex + (UINT)i);
         }
 
         SubmeshGeometry submesh;
         submesh.IndexCount = (UINT)shape.mesh.indices.size();
         submesh.StartIndexLocation = startIndex;
-        submesh.BaseVertexLocation = 0;  // Можно 0, если индексы правильные
+        submesh.BaseVertexLocation = 0;
 
         std::string submeshName = shape.name.empty()
             ? "submesh_" + std::to_string(shapeIdx)
