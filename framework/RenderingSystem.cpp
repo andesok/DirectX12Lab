@@ -5,6 +5,9 @@ void RenderingSystem::Initialize() {
     BuildShadersAndInputLayout();
     BuildPSO();
     BuildWavePSO();
+    BuildDeferredRootSignature();
+    BuildDeferredShaders();
+    BuildDeferredPSO();
 }
 
 RenderingSystem::RenderingSystem(
@@ -136,9 +139,18 @@ void RenderingSystem::BuildWavePSO()
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mWavePSO)));
 }
 
-void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList, D3D12_VIEWPORT& vp, D3D12_RECT& sc) {
-    cmdList->RSSetViewports(1, &vp);
-    cmdList->RSSetScissorRects(1, &sc);
+void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList,
+    D3D12_VIEWPORT& viewport,
+    D3D12_RECT& scissor,
+    GBuffer* gBuffer,
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv)
+{
+    if (!gBuffer) return;
+    gBuffer->TransitionToRenderTarget(cmdList);
+    gBuffer->SetAsRenderTargets(cmdList, &dsv);
+    gBuffer->Clear(cmdList);
+    cmdList->RSSetViewports(1, &viewport);
+    cmdList->RSSetScissorRects(1, &scissor);
     cmdList->SetGraphicsRootSignature(mRootSignature.Get());
 }
 
@@ -174,4 +186,105 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
 
     auto& submesh = item.Mesh->DrawArgs[item.SubmeshName];
     cmdList->DrawIndexedInstanced(submesh.IndexCount, 1, submesh.StartIndexLocation, submesh.BaseVertexLocation, 0);
+}
+
+void RenderingSystem::BuildDeferredRootSignature()
+{
+    // Root signature для deferred lighting pass
+    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+
+    // 3 текстуры G-Buffer (Albedo, Normal, Position)
+    CD3DX12_DESCRIPTOR_RANGE srvTable;
+    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // t0, t1, t2
+    slotRootParameter[0].InitAsDescriptorTable(1, &srvTable);
+
+    CD3DX12_DESCRIPTOR_RANGE cbvTable;
+    cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // b0
+    slotRootParameter[1].InitAsDescriptorTable(1, &cbvTable);
+
+    // Sampler
+    CD3DX12_DESCRIPTOR_RANGE samplerTable;
+    samplerTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);
+    slotRootParameter[2].InitAsDescriptorTable(1, &samplerTable);
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(3, slotRootParameter, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    ComPtr<ID3DBlob> serializedRootSig = nullptr;
+    ComPtr<ID3DBlob> errorBlob = nullptr;
+    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+        serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+
+    if (errorBlob != nullptr)
+    {
+        ::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    }
+    ThrowIfFailed(hr);
+    ThrowIfFailed(md3dDevice->CreateRootSignature(0,
+        serializedRootSig->GetBufferPointer(),
+        serializedRootSig->GetBufferSize(),
+        IID_PPV_ARGS(&mDeferredRootSig)));
+}
+
+void RenderingSystem::BuildDeferredShaders()
+{
+    mDeferredVSByteCode = d3dUtil::CompileShader(L"Shaders\\fullscreen_vs.hlsl",
+        nullptr, "main", "vs_5_0");
+    mDeferredPSByteCode = d3dUtil::CompileShader(L"Shaders\\deferred_ps.hlsl",
+        nullptr, "main", "ps_5_0");
+}
+
+void RenderingSystem::BuildDeferredPSO()
+{
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+
+    psoDesc.InputLayout = { nullptr, 0 }; // Нет вершинных буферов (full-screen quad)
+    psoDesc.pRootSignature = mDeferredRootSig.Get();
+    psoDesc.VS = { mDeferredVSByteCode->GetBufferPointer(), mDeferredVSByteCode->GetBufferSize() };
+    psoDesc.PS = { mDeferredPSByteCode->GetBufferPointer(), mDeferredPSByteCode->GetBufferSize() };
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState.DepthEnable = FALSE;
+    psoDesc.DepthStencilState.StencilEnable = FALSE;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.SampleDesc.Quality = 0;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; // Back buffer format
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredPSO)));
+}
+
+void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
+    ID3D12DescriptorHeap* cbvHeap,
+    UINT descriptorSize,
+    GBuffer* gBuffer)
+{
+    if (!gBuffer) return;
+
+    // Переводим G-Buffer из RENDER_TARGET в SHADER_RESOURCE для чтения
+    gBuffer->TransitionToShaderResource(cmdList);
+
+    // Устанавливаем дескрипторы для чтения из G-Buffer
+    ID3D12DescriptorHeap* heaps[] = { cbvHeap };
+    cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+    // Устанавливаем root signature и PSO для deferred lighting
+    cmdList->SetGraphicsRootSignature(mDeferredRootSig.Get());
+    cmdList->SetPipelineState(mDeferredPSO.Get());
+
+    // Устанавливаем SRV для G-Buffer текстур
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    // Смещение на оффсет, где лежат G-Buffer SRV (у вас offset = 2)
+    gpuHandle.Offset(2, descriptorSize);
+    cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
+
+    // TODO: Установить CBV со светом и sampler
+
+    // Рисуем full-screen quad
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    cmdList->DrawInstanced(3, 1, 0, 0); // 3 вершины для full-screen треугольника
 }

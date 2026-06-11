@@ -199,8 +199,7 @@ void App::CreateTextureSRV()
 
 bool App::Initialize()
 {
-    if(!D3DApp::Initialize())
-		return false;
+    if(!D3DApp::Initialize()) return false;
 		
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
     BuildDescriptorHeaps();
@@ -211,6 +210,9 @@ bool App::Initialize()
     DXGI_FORMAT_R16G16B16A16_FLOAT
     };
 
+    mGBuffer = std::make_unique<GBuffer>(md3dDevice.Get(), mClientWidth, mClientHeight);
+    mGBuffer->BuildResources();
+
     mRenderSystem = std::make_unique<RenderingSystem>(
         md3dDevice.Get(),
         gBufferFormats,
@@ -219,8 +221,7 @@ bool App::Initialize()
         m4xMsaaQuality
     );
     mRenderSystem->Initialize();
-    mGBuffer = std::make_unique<GBuffer>(md3dDevice.Get(), mClientWidth, mClientHeight);
-    mGBuffer->BuildResources();
+    mRenderSystem->SetGBuffer(mGBuffer.get());
 
     UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     UINT rtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -240,7 +241,7 @@ bool App::Initialize()
         gBufferRtvOffset,
         rtvDescriptorSize);
 
-    //mGBuffer->BuildDescriptors(hCpuSrv, hGpuSrv, hCpuRtv);
+    mGBuffer->BuildDescriptors(hCpuSrv, hGpuSrv, hCpuRtv);
 
     for (UINT i = 0; i < SwapChainBufferCount; i++)
     {
@@ -272,7 +273,7 @@ bool App::Initialize()
     float y = mRadius * cosf(mPhi);
     mCamera->SetPosition(x, y, z);
     mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
-    mCamera->LookAt(XMFLOAT3(x, y, z), XMFLOAT3(0, 0, 0), XMFLOAT3(0, 1, 0));
+    //mCamera->LookAt(XMFLOAT3(x, y, z), XMFLOAT3(0, 0, 0), XMFLOAT3(0, 1, 0));
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
@@ -348,21 +349,27 @@ void App::Draw(const GameTimer& gt)
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-    mCommandList->RSSetViewports(1, &mScreenViewport);
-    mCommandList->RSSetScissorRects(1, &mScissorRect);
+    mCommandList->ClearDepthStencilView(DepthStencilView(),
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-    auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    mCommandList->ResourceBarrier(1, &transition);
+    mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect,
+        mGBuffer.get(), DepthStencilView());
 
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::CornflowerBlue, 0, nullptr);
-    mCommandList->ClearDepthStencilView(DepthStencilView(), D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
+    mCommandList->ClearDepthStencilView(DepthStencilView(),
+        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
-    auto cbbv = CurrentBackBufferView();
-    auto dsv = DepthStencilView();
-    mCommandList->OMSetRenderTargets(1, &cbbv, true, &dsv);
+    ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get(), mSamplerHeap.Get() };
+    mCommandList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect);
+    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 0, descriptorSize);
+    mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+
+    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 1, descriptorSize);
+    mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
+
+    mCommandList->SetGraphicsRootDescriptorTable(2, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
 
     for (auto& pair : mGeo->DrawArgs)
     {
@@ -380,6 +387,16 @@ void App::Draw(const GameTimer& gt)
         mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get());
     }
 
+    auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCommandList->ResourceBarrier(1, &transition);
+
+    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::CornflowerBlue, 0, nullptr);
+
+    mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
+
+    mRenderSystem->EndFrame(mCommandList.Get(), mCbvHeap.Get(), descriptorSize, mGBuffer.get());
+
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     mCommandList->ResourceBarrier(1, &transition);
@@ -391,7 +408,6 @@ void App::Draw(const GameTimer& gt)
 
     ThrowIfFailed(mSwapChain->Present(0, 0));
     mCurrBackBuffer = (mCurrBackBuffer + 1) % SwapChainBufferCount;
-
     FlushCommandQueue();
 }
 

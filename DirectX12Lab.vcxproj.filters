@@ -87,5 +87,7 @@
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\texture_wave_vs.hlsl" />
+    <FxCompile Include="Shaders\fullscreen_vs.hlsl" />
+    <FxCompile Include="Shaders\deferred_ps.hlsl" />
   </ItemGroup>
 </Project>

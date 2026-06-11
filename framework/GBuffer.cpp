@@ -34,19 +34,18 @@ void GBuffer::BuildResources()
     for (int i = 0; i < BufferCount; ++i)
     {
         texDesc.Format = mFormats[i];
-
-        // Оптимальное значение очистки
         CD3DX12_CLEAR_VALUE optClear(mFormats[i], mClearColors[i]);
 
         ThrowIfFailed(md3dDevice->CreateCommittedResource(
             &heapProps,
             D3D12_HEAP_FLAG_NONE,
             &texDesc,
-            D3D12_RESOURCE_STATE_GENERIC_READ, // Начальное состояние
+            D3D12_RESOURCE_STATE_COMMON,
             &optClear,
             IID_PPV_ARGS(&mBuffers[i])
         ));
     }
+
 }
 
 void GBuffer::BuildDescriptors(
@@ -111,15 +110,14 @@ void GBuffer::Clear(ID3D12GraphicsCommandList* cmdList)
     }
 }
 
-void GBuffer::SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList)
+void GBuffer::SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList,
+    D3D12_CPU_DESCRIPTOR_HANDLE* dsv)
 {
     std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvHandles;
     for (int i = 0; i < BufferCount; ++i)
-    {
         rtvHandles.push_back(RtvHandle(i));
-    }
 
-    cmdList->OMSetRenderTargets(rtvHandles.size(), rtvHandles.data(), false, nullptr);
+    cmdList->OMSetRenderTargets((UINT)rtvHandles.size(), rtvHandles.data(), false, dsv);
 }
 
 void GBuffer::SetAsSRVs(ID3D12GraphicsCommandList* cmdList, UINT rootParameterIndex)

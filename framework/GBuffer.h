@@ -19,7 +19,8 @@ public:
     void Clear(ID3D12GraphicsCommandList* cmdList);
 
     // Установка G-Buffer как Render Targets
-    void SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList);
+    void SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList,
+        D3D12_CPU_DESCRIPTOR_HANDLE* dsv = nullptr);
 
     // Установка G-Buffer текстур как Shader Resources
     void SetAsSRVs(ID3D12GraphicsCommandList* cmdList, UINT rootParameterIndex);
