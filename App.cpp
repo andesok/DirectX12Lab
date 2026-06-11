@@ -371,6 +371,12 @@ void App::Draw(const GameTimer& gt)
         item.SubmeshName = pair.first;
         item.CBIndex = 0;
         item.SRVIndex = 1;
+
+        if (item.SubmeshName == "sponza_378_sponza_378_Material__25")
+        {
+            item.Shader = ShaderType::WAVE;
+        }
+
         mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get());
     }
 
@@ -526,7 +532,6 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
         mGeo->DrawArgs[submeshName] = submesh;
     }
 
-    // Создаём GPU буферы
     const UINT vbByteSize = (UINT)allVertices.size() * sizeof(Vertex);
     const UINT ibByteSize = (UINT)allIndices.size() * sizeof(std::uint32_t);
 

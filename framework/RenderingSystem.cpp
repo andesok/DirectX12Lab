@@ -4,7 +4,7 @@ void RenderingSystem::Initialize() {
     BuildRootSignature();
     BuildShadersAndInputLayout();
     BuildPSO();
-    // Не вызываем BuildWavePSO() - волновой шейдер отключен
+    BuildWavePSO();
 }
 
 RenderingSystem::RenderingSystem(
@@ -63,13 +63,11 @@ void RenderingSystem::BuildRootSignature()
         IID_PPV_ARGS(&mRootSignature)));
 }
 
-
 void RenderingSystem::BuildShadersAndInputLayout()
 {
-    HRESULT hr = S_OK;
-
     mvsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_vs.hlsl", nullptr, "VS", "vs_5_0");
     mpsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_ps.hlsl", nullptr, "PS", "ps_5_0");
+    mWaveVSByteCode = d3dUtil::CompileShader(L"Shaders\\texture_wave_vs.hlsl", nullptr, "main", "vs_5_0");
 
     mInputLayout =
     {
@@ -110,8 +108,32 @@ void RenderingSystem::BuildPSO()
 
 void RenderingSystem::BuildWavePSO()
 {
-    // Волновой PSO отключен - используем mPSO вместо этого
-    mWavePSO = mPSO;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+
+    psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
+    psoDesc.pRootSignature = mRootSignature.Get();
+    psoDesc.VS =
+    {
+        reinterpret_cast<BYTE*>(mWaveVSByteCode->GetBufferPointer()),
+        mWaveVSByteCode->GetBufferSize()
+    };
+    psoDesc.PS =
+    {
+        reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
+        mpsByteCode->GetBufferSize()
+    };
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.SampleDesc.Count = mMsaaState ? 4 : 1;
+    psoDesc.SampleDesc.Quality = mMsaaState ? (mMsaaQuality - 1) : 0;
+    psoDesc.NumRenderTargets = 1;
+    psoDesc.RTVFormats[0] = mFormats[0];
+    psoDesc.DSVFormat = mDepthStencilFormat;
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mWavePSO)));
 }
 
 void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList, D3D12_VIEWPORT& vp, D3D12_RECT& sc) {
@@ -125,8 +147,8 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* mainHeap,
     ID3D12DescriptorHeap* samplerHeap)
 {
-    // Используем только обычный PSO
-    cmdList->SetPipelineState(mPSO.Get());
+    ID3D12PipelineState* pso = (item.Shader == ShaderType::WAVE) ? mWavePSO.Get() : mPSO.Get();
+    cmdList->SetPipelineState(pso);
 
     ID3D12DescriptorHeap* heaps[] = { mainHeap, samplerHeap };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);

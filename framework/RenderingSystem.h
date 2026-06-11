@@ -9,38 +9,31 @@ using namespace DirectX;
 
 struct RenderConstants {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
-    float TotalTime = 0.0f;     // Для анимации
-    XMFLOAT2 Tiling = { 1.0f, 1.0f }; // Для тайлинга
+    float TotalTime = 0.0f;
+    XMFLOAT2 Tiling = { 1.0f, 1.0f };
     float Padding;
 };
 
-// Перечисление для типов шейдеров
 enum class ShaderType {
-    TEXTURE,        // Обычный текстурный шейдер
-    WAVE            // Волновой шейдер с растяжением
+    TEXTURE,
+    WAVE
 };
 
 struct RenderItem {
     MeshGeometry* Mesh = nullptr;
     std::string SubmeshName;
-    UINT CBIndex = 0;           // Индекс в буфере констант
-    UINT SRVIndex = 0;          // Индекс текстуры в куче
-    ShaderType Shader = ShaderType::TEXTURE;  // Выбор шейдера
+    UINT CBIndex = 0;
+    UINT SRVIndex = 0;
+    ShaderType Shader = ShaderType::TEXTURE;
 };
 
 class RenderingSystem {
 public:
     RenderingSystem(ID3D12Device* device, const DXGI_FORMAT gBufferFormats[3], DXGI_FORMAT depthBufferFormat, bool msaaState, UINT msaaQuality);
-
     ~RenderingSystem();
 
-    // Инициализация графического конвейера
     void Initialize();
-
-    // Подготовка кадра (установка вьюпортов, подносов с дескрипторами)
     void BeginFrame(ID3D12GraphicsCommandList* cmdList, D3D12_VIEWPORT& viewport, D3D12_RECT& scissor);
-
-    // Отрисовка конкретной модели (с учетом текстуры и материала)
     void DrawItem(ID3D12GraphicsCommandList* cmdList,
         const RenderItem& item,
         ID3D12DescriptorHeap* mainHeap,
@@ -50,7 +43,7 @@ private:
     void BuildRootSignature();
     void BuildShadersAndInputLayout();
     void BuildPSO();
-    void BuildWavePSO();  // Для волнового шейдера
+    void BuildWavePSO();
 
 private:
     ID3D12Device* md3dDevice = nullptr;
@@ -58,12 +51,12 @@ private:
     DXGI_FORMAT mDepthStencilFormat;
 
     ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
-    ComPtr<ID3D12PipelineState> mPSO = nullptr;          // Обычный текстурный PSO
-    ComPtr<ID3D12PipelineState> mWavePSO = nullptr;      // Волновой PSO
+    ComPtr<ID3D12PipelineState> mPSO = nullptr;
+    ComPtr<ID3D12PipelineState> mWavePSO = nullptr;
 
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsByteCode = nullptr;
-    ComPtr<ID3DBlob> mWaveVSByteCode = nullptr;          // Волновой вершинный шейдер
+    ComPtr<ID3DBlob> mWaveVSByteCode = nullptr;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
     bool mMsaaState;

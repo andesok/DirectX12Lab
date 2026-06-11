@@ -19,7 +19,13 @@ struct VertexOut
 VertexOut main(VertexIn vin)
 {
     VertexOut vout;
-    vout.PosH = mul(float4(vin.PosL, 1.0f), gWorldViewProj);
+    
+    float3 posL = vin.PosL;
+    
+    float wave = sin(gTime * 5.0f + vin.PosL.x * 0.5f) * 4.0f;
+    posL.y = posL.y + wave;
+    
+    vout.PosH = mul(float4(posL, 1.0f), gWorldViewProj);
     vout.TexCoord = vin.TexCoord;
     return vout;
 }
