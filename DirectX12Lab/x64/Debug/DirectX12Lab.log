@@ -1,3 +1,2 @@
-﻿FXC : error X3501: 'main': entrypoint not found
-  
-  compilation failed; no code produced
+﻿  RenderingSystem.cpp
+  DirectX12Lab.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe
