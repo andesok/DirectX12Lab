@@ -21,12 +21,11 @@ VertexOut VS(VertexIn vin)
     VertexOut vout;
     
     float3 posL = vin.PosL;
-    float distanceFromCenter = length(vin.PosL.xz);
-    float waveAmount = sin(gTime * 2.0f + distanceFromCenter * 0.5f) * 2.0f;
+    float dist = sqrt(vin.PosL.x * vin.PosL.x + vin.PosL.z * vin.PosL.z);
+    float waveAmount = sin(gTime * 2.0f + dist * 0.5f) * 2.0f;
     posL.y += waveAmount;
-
-    vout.PosH = mul(float4(posL, 1.0f), gWorldViewProj);
     
+    vout.PosH = mul(float4(posL, 1.0f), gWorldViewProj);
     vout.TexCoord = vin.TexCoord;
     return vout;
 }

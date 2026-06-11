@@ -9,16 +9,23 @@ using namespace DirectX;
 
 struct RenderConstants {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
-    float TotalTime = 0.0f;
-    XMFLOAT2 Tiling = { 1.0f, 1.0f };
+    float TotalTime = 0.0f;     // Для анимации
+    XMFLOAT2 Tiling = { 1.0f, 1.0f }; // Для тайлинга
     float Padding;
+};
+
+// Перечисление для типов шейдеров
+enum class ShaderType {
+    TEXTURE,        // Обычный текстурный шейдер
+    WAVE            // Волновой шейдер с растяжением
 };
 
 struct RenderItem {
     MeshGeometry* Mesh = nullptr;
     std::string SubmeshName;
-    UINT CBIndex = 0;
-    UINT SRVIndex = 0;
+    UINT CBIndex = 0;           // Индекс в буфере констант
+    UINT SRVIndex = 0;          // Индекс текстуры в куче
+    ShaderType Shader = ShaderType::TEXTURE;  // Выбор шейдера
 };
 
 class RenderingSystem {
@@ -27,10 +34,13 @@ public:
 
     ~RenderingSystem();
 
+    // Инициализация графического конвейера
     void Initialize();
 
+    // Подготовка кадра (установка вьюпортов, подносов с дескрипторами)
     void BeginFrame(ID3D12GraphicsCommandList* cmdList, D3D12_VIEWPORT& viewport, D3D12_RECT& scissor);
 
+    // Отрисовка конкретной модели (с учетом текстуры и материала)
     void DrawItem(ID3D12GraphicsCommandList* cmdList,
         const RenderItem& item,
         ID3D12DescriptorHeap* mainHeap,
@@ -40,6 +50,7 @@ private:
     void BuildRootSignature();
     void BuildShadersAndInputLayout();
     void BuildPSO();
+    void BuildWavePSO();  // Для волнового шейдера
 
 private:
     ID3D12Device* md3dDevice = nullptr;
@@ -47,10 +58,12 @@ private:
     DXGI_FORMAT mDepthStencilFormat;
 
     ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
-    ComPtr<ID3D12PipelineState> mPSO = nullptr;
+    ComPtr<ID3D12PipelineState> mPSO = nullptr;          // Обычный текстурный PSO
+    ComPtr<ID3D12PipelineState> mWavePSO = nullptr;      // Волновой PSO
 
     ComPtr<ID3DBlob> mvsByteCode = nullptr;
     ComPtr<ID3DBlob> mpsByteCode = nullptr;
+    ComPtr<ID3DBlob> mWaveVSByteCode = nullptr;          // Волновой вершинный шейдер
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
     bool mMsaaState;
