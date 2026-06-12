@@ -40,12 +40,11 @@ void GBuffer::BuildResources()
             &heapProps,
             D3D12_HEAP_FLAG_NONE,
             &texDesc,
-            D3D12_RESOURCE_STATE_COMMON,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
             &optClear,
             IID_PPV_ARGS(&mBuffers[i])
         ));
     }
-
 }
 
 void GBuffer::BuildDescriptors(
@@ -122,7 +121,7 @@ void GBuffer::SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList,
 
 void GBuffer::SetAsSRVs(ID3D12GraphicsCommandList* cmdList, UINT rootParameterIndex)
 {
-    // Создаем массив GPU дескрипторов
+    // Массив GPU дескрипторов
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> srvHandles;
     for (int i = 0; i < BufferCount; ++i)
     {

@@ -145,7 +145,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="App.cpp" />
+    <ClCompile Include="src\App.cpp" />
     <ClCompile Include="src\Camera.cpp" />
     <ClCompile Include="framework\d3dApp.cpp" />
     <ClCompile Include="framework\d3dUtil.cpp" />
@@ -155,8 +155,10 @@
     <ClCompile Include="framework\MathHelper.cpp" />
     <ClCompile Include="framework\RenderingSystem.cpp" />
     <ClCompile Include="framework\tiny_obj_loader.cpp" />
+    <ClCompile Include="src\Main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="headers\App.h" />
     <ClInclude Include="headers\Camera.h" />
     <ClInclude Include="framework\d3dApp.h" />
     <ClInclude Include="framework\d3dUtil.h" />
@@ -168,6 +170,7 @@
     <ClInclude Include="framework\RenderingSystem.h" />
     <ClInclude Include="framework\tiny_obj_loader.h" />
     <ClInclude Include="framework\UploadBuffer.h" />
+    <ClInclude Include="headers\LightData.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Shaders\texture_ps.hlsl">

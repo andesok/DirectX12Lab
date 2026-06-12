@@ -152,6 +152,8 @@ void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList,
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissor);
     cmdList->SetGraphicsRootSignature(mRootSignature.Get());
+    mViewport = viewport;
+    mScissor = scissor;
 }
 
 void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
@@ -260,31 +262,38 @@ void RenderingSystem::BuildDeferredPSO()
 
 void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* cbvHeap,
+    ID3D12DescriptorHeap* samplerHeap,
     UINT descriptorSize,
     GBuffer* gBuffer)
 {
     if (!gBuffer) return;
 
-    // Переводим G-Buffer из RENDER_TARGET в SHADER_RESOURCE для чтения
     gBuffer->TransitionToShaderResource(cmdList);
 
-    // Устанавливаем дескрипторы для чтения из G-Buffer
-    ID3D12DescriptorHeap* heaps[] = { cbvHeap };
+    // Биндим обе heap
+    ID3D12DescriptorHeap* heaps[] = { cbvHeap, samplerHeap };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    // Устанавливаем root signature и PSO для deferred lighting
     cmdList->SetGraphicsRootSignature(mDeferredRootSig.Get());
     cmdList->SetPipelineState(mDeferredPSO.Get());
 
-    // Устанавливаем SRV для G-Buffer текстур
-    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(cbvHeap->GetGPUDescriptorHandleForHeapStart());
-    // Смещение на оффсет, где лежат G-Buffer SRV (у вас offset = 2)
-    gpuHandle.Offset(2, descriptorSize);
-    cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
+    // Слот 0: G-Buffer SRV (смещение 2 = kGBufferSrvBase)
+    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(
+        cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    srvHandle.Offset(2, descriptorSize);
+    cmdList->SetGraphicsRootDescriptorTable(0, srvHandle);
 
-    // TODO: Установить CBV со светом и sampler
+    // Слот 1: CBV (слот 0 в куче)
+    CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(
+        cbvHeap->GetGPUDescriptorHandleForHeapStart());
+    cmdList->SetGraphicsRootDescriptorTable(1, cbvHandle);
 
-    // Рисуем full-screen quad
+    // Слот 2: Sampler
+    cmdList->SetGraphicsRootDescriptorTable(2,
+        samplerHeap->GetGPUDescriptorHandleForHeapStart());
+
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    cmdList->DrawInstanced(3, 1, 0, 0); // 3 вершины для full-screen треугольника
+    cmdList->RSSetViewports(1, &mViewport);
+    cmdList->RSSetScissorRects(1, &mScissor);
+    cmdList->DrawInstanced(3, 1, 0, 0);
 }

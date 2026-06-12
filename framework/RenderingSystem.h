@@ -44,8 +44,9 @@ public:
         ID3D12DescriptorHeap* mainHeap,
         ID3D12DescriptorHeap* samplerHeap);
     void SetGBuffer(GBuffer* gBuffer) { mGBuffer = gBuffer; }
-    void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
+    void EndFrame(ID3D12GraphicsCommandList* cmdList,
         ID3D12DescriptorHeap* cbvHeap,
+        ID3D12DescriptorHeap* samplerHeap,
         UINT descriptorSize,
         GBuffer* gBuffer);
     ID3D12RootSignature* GetRootSignature() const { return mRootSignature.Get(); }
@@ -62,20 +63,20 @@ private:
     void BuildDeferredPSO();
 
 private:
-    ID3D12Device* md3dDevice = nullptr;
+    ID3D12Device* md3dDevice;
     DXGI_FORMAT mFormats[3];
     DXGI_FORMAT mDepthStencilFormat;
 
-    ComPtr<ID3D12RootSignature> mRootSignature = nullptr;
-    ComPtr<ID3D12PipelineState> mPSO = nullptr;
-    ComPtr<ID3D12PipelineState> mWavePSO = nullptr;
+    ComPtr<ID3D12RootSignature> mRootSignature;
+    ComPtr<ID3D12PipelineState> mPSO;
+    ComPtr<ID3D12PipelineState> mWavePSO;
 
-    ComPtr<ID3DBlob> mvsByteCode = nullptr;
-    ComPtr<ID3DBlob> mpsByteCode = nullptr;
-    ComPtr<ID3DBlob> mWaveVSByteCode = nullptr;
+    ComPtr<ID3DBlob> mvsByteCode;
+    ComPtr<ID3DBlob> mpsByteCode;
+    ComPtr<ID3DBlob> mWaveVSByteCode ;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
-    GBuffer* mGBuffer = nullptr;
+    GBuffer* mGBuffer;
     ComPtr<ID3D12PipelineState> mDeferredPSO;
     ComPtr<ID3D12RootSignature> mDeferredRootSig;
     ComPtr<ID3DBlob> mDeferredVSByteCode;
@@ -83,4 +84,8 @@ private:
 
     bool mMsaaState;
     UINT mMsaaQuality;
+
+    D3D12_VIEWPORT mViewport;
+    D3D12_RECT mScissor;
+
 };
