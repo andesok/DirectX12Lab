@@ -34,6 +34,8 @@ void GBuffer::BuildResources()
     for (int i = 0; i < BufferCount; ++i)
     {
         texDesc.Format = mFormats[i];
+
+
         CD3DX12_CLEAR_VALUE optClear(mFormats[i], mClearColors[i]);
 
         ThrowIfFailed(md3dDevice->CreateCommittedResource(
@@ -62,7 +64,7 @@ void GBuffer::BuildDescriptors(
     for (int i = 0; i < BufferCount; ++i)
     {
         // 1. Создаем RTV (для записи)
-        md3dDevice->CreateRenderTargetView(mBuffers[i].Get(), nullptr, RtvHandle(i));
+        md3dDevice->CreateRenderTargetView(mBuffers[i].Get(), nullptr, GetRtv(i));
 
         // 2. Создаем SRV (для чтения шейдером)
         D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -105,7 +107,7 @@ void GBuffer::Clear(ID3D12GraphicsCommandList* cmdList)
 {
     for (int i = 0; i < BufferCount; ++i)
     {
-        cmdList->ClearRenderTargetView(RtvHandle(i), mClearColors[i], 0, nullptr);
+        cmdList->ClearRenderTargetView(GetRtv(i), mClearColors[i], 0, nullptr);
     }
 }
 
@@ -114,7 +116,7 @@ void GBuffer::SetAsRenderTargets(ID3D12GraphicsCommandList* cmdList,
 {
     std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvHandles;
     for (int i = 0; i < BufferCount; ++i)
-        rtvHandles.push_back(RtvHandle(i));
+        rtvHandles.push_back(GetRtv(i));
 
     cmdList->OMSetRenderTargets((UINT)rtvHandles.size(), rtvHandles.data(), false, dsv);
 }
@@ -125,19 +127,19 @@ void GBuffer::SetAsSRVs(ID3D12GraphicsCommandList* cmdList, UINT rootParameterIn
     std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> srvHandles;
     for (int i = 0; i < BufferCount; ++i)
     {
-        srvHandles.push_back(SrvHandle(i));
+        srvHandles.push_back(GetSrv(i));
     }
 
     // Устанавливаем дескрипторную таблицу
     cmdList->SetGraphicsRootDescriptorTable(rootParameterIndex, srvHandles[0]);
 }
 
-D3D12_CPU_DESCRIPTOR_HANDLE GBuffer::RtvHandle(int index) const {
+D3D12_CPU_DESCRIPTOR_HANDLE GBuffer::GetRtv(int index) const {
     return CD3DX12_CPU_DESCRIPTOR_HANDLE(mhCpuRtv, index, mRtvDescriptorSize);
 }
 
 
-D3D12_GPU_DESCRIPTOR_HANDLE GBuffer::SrvHandle(int index) const
+D3D12_GPU_DESCRIPTOR_HANDLE GBuffer::GetSrv(int index) const
 {
     return CD3DX12_GPU_DESCRIPTOR_HANDLE(mhGpuSrv, index, mSrvDescriptorSize);
 }

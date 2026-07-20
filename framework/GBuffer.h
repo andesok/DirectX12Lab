@@ -24,8 +24,8 @@ public:
     void TransitionToRenderTarget(ID3D12GraphicsCommandList* cmdList);
     void TransitionToShaderResource(ID3D12GraphicsCommandList* cmdList);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle(int index) const;
-    D3D12_GPU_DESCRIPTOR_HANDLE SrvHandle(int index) const;
+    D3D12_CPU_DESCRIPTOR_HANDLE GetRtv(int index) const;
+    D3D12_GPU_DESCRIPTOR_HANDLE GetSrv(int index) const;
 
     DXGI_FORMAT GetFormat(int index) const { return mFormats[index]; }
     UINT GetWidth() const { return mWidth; }

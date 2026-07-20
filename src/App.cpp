@@ -7,15 +7,6 @@ App::App(HINSTANCE hInstance)
 App::~App()
 {}
 
-void App::BuildTextureHeap()
-{
-    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-    srvHeapDesc.NumDescriptors = 1;
-    srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    ThrowIfFailed(md3dDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSrvHeap)));
-}
-
 void App::BuildSampler()
 {
     D3D12_DESCRIPTOR_HEAP_DESC samplerHeapDesc = {};
@@ -48,6 +39,59 @@ bool App::Initialize()
 
     BuildDescriptorHeaps();
     BuildConstantBuffers();
+
+    mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+
+
+    const UINT maxLights = 256;
+    mLightBuffer = std::make_unique<UploadBuffer<Light>>(
+        md3dDevice.Get(), maxLights, false);
+    mLightBufferSize = maxLights;
+
+    mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
+
+    // 1. Направленный свет
+    Light dirLight;
+    dirLight.Type = LIGHT_TYPE_DIRECTIONAL;
+    dirLight.Strength = { 1.0f, 0.8f, 0.6f };
+    dirLight.Direction = { 1.0f, -1.0f, 1.0f };
+    mLights.push_back(dirLight);
+    mMainLight = &mLights.back();
+
+
+    // 2. Точечный свет
+    Light pointLight;
+    pointLight.Type = LIGHT_TYPE_POINT;
+    pointLight.Strength = { 100.0f, 0.0f, 0.0f };
+    pointLight.Position = { 710.0f, 100.0f, 0.0f };
+    pointLight.Range = 400.0f;
+    pointLight.FalloffStart = 0.0f;
+    pointLight.FalloffEnd = pointLight.Range;
+    mLights.push_back(pointLight);
+    mPointLight = &mLights.back();
+
+    // 3. Прожектор
+    Light spotLight;
+    spotLight.Type = LIGHT_TYPE_SPOT;
+    spotLight.Strength = { 0.0f, 100.0f, 0.0f };
+    spotLight.Position = { 0.0f, 200.0f, 0.0f };
+    spotLight.Direction = { 0.0f, -1.0f, 0.0f };
+    spotLight.Range = 300.0f;
+    spotLight.SpotPower = 1.0f;
+    spotLight.FalloffStart = spotLight.Range - 50.0f;
+    spotLight.FalloffEnd = spotLight.Range;
+    mLights.push_back(spotLight);
+    mSpotLight = &mLights.back();
+
+    Light pointLight2;
+    pointLight2.Type = LIGHT_TYPE_POINT;
+    pointLight2.Strength = { 0.0f, 0.0f, 150.0f };
+    pointLight2.Position = { -700.0f, 500.0f, 400.0f };
+    pointLight2.Range = 300.0f;
+    pointLight2.FalloffStart = 0.0f;
+    pointLight2.FalloffEnd = pointLight2.Range;
+    mLights.push_back(pointLight2);
+    mPointLight2 = &mLights.back();
 
     LoadAllTextures();
 
@@ -107,13 +151,11 @@ bool App::Initialize()
 
     mCamera = std::make_unique<Camera>();
 
-    // Начальная позиция (орбитальная)
     float x = mRadius * sinf(mPhi) * cosf(mTheta);
     float z = mRadius * sinf(mPhi) * sinf(mTheta);
     float y = mRadius * cosf(mPhi);
     mCamera->SetPosition(x, y, z);
     mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
-    //mCamera->LookAt(XMFLOAT3(x, y, z), XMFLOAT3(0, 0, 0), XMFLOAT3(0, 1, 0));
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
@@ -142,8 +184,6 @@ void App::OnResize()
 
 void App::Update(const GameTimer& gt)
 {
-
-    //Camera
     if (!mCamera) return;
     float dt = gt.DeltaTime();
     float speed = 400.0f * dt;
@@ -174,9 +214,40 @@ void App::Update(const GameTimer& gt)
 	ObjectConstants objConstants;
 
     XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
+    XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
     objConstants.gTime = gt.TotalTime();
 
     mObjectCB->CopyData(0, objConstants);
+
+    PassConstants passConstants;
+    XMStoreFloat4x4(&passConstants.View, XMMatrixTranspose(view));
+    XMStoreFloat4x4(&passConstants.Proj, XMMatrixTranspose(proj));
+    XMStoreFloat4x4(&passConstants.ViewProj, XMMatrixTranspose(view * proj));
+    passConstants.EyePosW = mCamera->GetPosition3f();
+    passConstants.AmbientLight = mAmbientLight;
+    passConstants.NumLights = (int)mLights.size();
+
+
+    // Обновляем константный буфер
+    mPassCB->CopyData(0, passConstants);
+
+    // ============================================
+    // КОПИРУЕМ ВСЕ ИСТОЧНИКИ В БУФЕР
+    // ============================================
+    UINT lightCount = (UINT)mLights.size();
+    if (lightCount > mLightBufferSize)
+    {
+        // Если источников больше, чем буфер — расширяем
+        mLightBuffer = std::make_unique<UploadBuffer<Light>>(
+            md3dDevice.Get(), lightCount, false);
+        mLightBufferSize = lightCount;
+    }
+
+    // Копируем все источники в буфер
+    for (UINT i = 0; i < lightCount; ++i)
+    {
+        mLightBuffer->CopyData(i, mLights[i]);
+    }
 }
 
 void App::Draw(const GameTimer& gt)
@@ -184,14 +255,8 @@ void App::Draw(const GameTimer& gt)
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-    mCommandList->ClearDepthStencilView(DepthStencilView(),
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
-
     mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect,
         mGBuffer.get(), DepthStencilView());
-
-    mCommandList->ClearDepthStencilView(DepthStencilView(),
-        D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1.0f, 0, 0, nullptr);
 
     ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get(), mSamplerHeap.Get() };
     mCommandList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -214,9 +279,9 @@ void App::Draw(const GameTimer& gt)
         item.CBIndex = 0;
         item.SRVIndex = (submeshInfo.textureIndex >= 0)
             ? kTextureSrvBase + submeshInfo.textureIndex
-            : kTextureSrvBase; // заглушка — первая доступная текстура
+            : kTextureSrvBase;
 
-        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get());
+        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get(),true);
     }
 
     auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
@@ -227,8 +292,15 @@ void App::Draw(const GameTimer& gt)
 
     mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
 
-    mRenderSystem->EndFrame(mCommandList.Get(), mCbvHeap.Get(),
-        mSamplerHeap.Get(), descriptorSize, mGBuffer.get());
+    mRenderSystem->EndFrame(
+        mCommandList.Get(),
+        mCbvHeap.Get(),
+        mSamplerHeap.Get(),
+        descriptorSize,
+        mGBuffer.get(),
+        mPassCB->Resource()->GetGPUVirtualAddress(),
+        mLightBuffer->Resource()->GetGPUVirtualAddress(),
+        (UINT)mLights.size());
 
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -399,6 +471,17 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
                 attrib.vertices[3 * index.vertex_index + 2]
             };
 
+            if (index.normal_index >= 0) {
+                v.Normal = {
+                    attrib.normals[3 * index.normal_index + 0],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2]
+                };
+            }
+            else {
+                v.Normal = { 0.0f, 1.0f, 0.0f }; // fallback, чтобы не было NaN/мусора
+            }
+
             if (index.texcoord_index >= 0) {
                 v.TexCoord = {
                     attrib.texcoords[2 * index.texcoord_index + 0],
@@ -531,6 +614,6 @@ void App::LoadAllTextures()
             descriptorSize);
 
         md3dDevice->CreateShaderResourceView(texture->Resource.Get(), &srvDesc, hDescriptor);
-        mTextures.push_back(std::move(texture)); // держим ресурс живым
+        mTextures.push_back(std::move(texture));
     }
 }

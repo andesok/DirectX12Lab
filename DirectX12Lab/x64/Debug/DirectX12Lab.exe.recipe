@@ -2,18 +2,21 @@
 <Project>
   <ProjectOutputs>
     <ProjectOutput>
-      <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe</FullPath>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\DirectX12Lab.exe</FullPath>
     </ProjectOutput>
   </ProjectOutputs>
   <ContentFiles>
     <ContentFile>
-      <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\deferred_ps.cso</FullPath>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\deferred_ps.cso</FullPath>
     </ContentFile>
     <ContentFile>
-      <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\fullscreen_vs.cso</FullPath>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\fullscreen_vs.cso</FullPath>
     </ContentFile>
     <ContentFile>
-      <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\texture_wave_vs.cso</FullPath>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\geometry_ps.cso</FullPath>
+    </ContentFile>
+    <ContentFile>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\geometry_vs.cso</FullPath>
     </ContentFile>
   </ContentFiles>
   <SatelliteDlls />

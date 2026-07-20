@@ -204,7 +204,7 @@ struct MeshGeometry
 		IndexBufferUploader = nullptr;
 	}
 };
-
+/*
 struct Light
 {
     DirectX::XMFLOAT3 Strength = { 0.5f, 0.5f, 0.5f };
@@ -216,7 +216,7 @@ struct Light
 };
 
 #define MaxLights 16
-
+*/
 struct MaterialConstants
 {
 	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.0f, 1.0f, 1.0f, 1.0f };

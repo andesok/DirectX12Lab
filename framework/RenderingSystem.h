@@ -34,7 +34,7 @@ public:
     ~RenderingSystem();
 
     void Initialize();
-    void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList,
+    void BeginFrame(ID3D12GraphicsCommandList* cmdList,
         D3D12_VIEWPORT& viewport,
         D3D12_RECT& scissor,
         GBuffer* gBuffer,
@@ -42,22 +42,22 @@ public:
     void DrawItem(ID3D12GraphicsCommandList* cmdList,
         const RenderItem& item,
         ID3D12DescriptorHeap* mainHeap,
-        ID3D12DescriptorHeap* samplerHeap);
+        ID3D12DescriptorHeap* samplerHeap,
+        bool isGeometryPass);
     void SetGBuffer(GBuffer* gBuffer) { mGBuffer = gBuffer; }
     void EndFrame(ID3D12GraphicsCommandList* cmdList,
         ID3D12DescriptorHeap* cbvHeap,
         ID3D12DescriptorHeap* samplerHeap,
         UINT descriptorSize,
-        GBuffer* gBuffer);
+        GBuffer* gBuffer,
+        D3D12_GPU_VIRTUAL_ADDRESS passCBAddress,
+        D3D12_GPU_VIRTUAL_ADDRESS lightBufferAddress,
+        UINT numLights);
     ID3D12RootSignature* GetRootSignature() const { return mRootSignature.Get(); }
-    ID3D12PipelineState* GetPSO() const { return mPSO.Get(); }
 
 private:
     void BuildRootSignature();
-    void BuildShadersAndInputLayout();
-    void BuildPSO();
-    void BuildWavePSO();
-
+    void BuildGeometryPSO();
     void BuildDeferredRootSignature();
     void BuildDeferredShaders();
     void BuildDeferredPSO();
@@ -68,8 +68,7 @@ private:
     DXGI_FORMAT mDepthStencilFormat;
 
     ComPtr<ID3D12RootSignature> mRootSignature;
-    ComPtr<ID3D12PipelineState> mPSO;
-    ComPtr<ID3D12PipelineState> mWavePSO;
+    ComPtr<ID3D12PipelineState> mGeometryPSO;
 
     ComPtr<ID3DBlob> mvsByteCode;
     ComPtr<ID3DBlob> mpsByteCode;

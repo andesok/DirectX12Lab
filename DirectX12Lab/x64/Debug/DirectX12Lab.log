@@ -1,9 +1,9 @@
 ﻿  App.cpp
-D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18): warning C4244: =: преобразование "wchar_t" в "char", возможна потеря данных
+E:\Programs\Microsoft Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18): warning C4244: =: преобразование "wchar_t" в "char", возможна потеря данных
   (компиляция исходного файла "src/App.cpp")
-      D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18):
+      E:\Programs\Microsoft Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18):
       контекст создания экземпляра шаблона (сначала самый старый)
-          D:\Projects_C++\DirectX12Lab\src\App.cpp(516,28):
+          E:\Git Projects\DirectX12Lab\src\App.cpp(599,28):
           выполняется компиляция ссылки на экземпляр шаблон функции "std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string<std::_String_iterator<std::_String_val<std::_Simple_types<_Elem>>>,0>(_Iter,_Iter,const _Alloc &)"
           with
           [
@@ -11,9 +11,9 @@ D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,1
               _Iter=std::_String_iterator<std::_String_val<std::_Simple_types<wchar_t>>>,
               _Alloc=std::allocator<char>
           ]
-              D:\Projects_C++\DirectX12Lab\src\App.cpp(515,31):
+              E:\Git Projects\DirectX12Lab\src\App.cpp(598,31):
               см. первую ссылку на std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string "App::LoadAllTextures"
-          D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(862,17):
+          E:\Programs\Microsoft Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(862,17):
           выполняется компиляция ссылки на экземпляр шаблон функции "void std::basic_string<char,std::char_traits<char>,std::allocator<char>>::_Construct_from_iter<wchar_t*,wchar_t*,_Size_type>(_Iter,const _Sent,_Size)"
           with
           [
@@ -22,7 +22,7 @@ D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,1
               _Sent=wchar_t *,
               _Size=unsigned __int64
           ]
-          D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(1018,18):
+          E:\Programs\Microsoft Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(1018,18):
           выполняется компиляция ссылки на экземпляр шаблон функции "_OutIt *std::_Copy_n_unchecked4<wchar_t*,_Size,char*>(_InIt,_SizeTy,_OutIt)"
           with
           [
@@ -32,7 +32,4 @@ D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,1
               _SizeTy=unsigned __int64
           ]
   
-  RenderingSystem.cpp
-  Main.cpp
-  Создание кода...
-  DirectX12Lab.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe
+  DirectX12Lab.vcxproj -> E:\Git Projects\DirectX12Lab\x64\Debug\DirectX12Lab.exe

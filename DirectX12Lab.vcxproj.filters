@@ -91,11 +91,8 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Shaders\texture_ps.hlsl" />
-    <None Include="Shaders\texture_vs.hlsl" />
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="Shaders\texture_wave_vs.hlsl" />
+    <FxCompile Include="Shaders\geometry_vs.hlsl" />
+    <FxCompile Include="Shaders\geometry_ps.hlsl" />
     <FxCompile Include="Shaders\fullscreen_vs.hlsl" />
     <FxCompile Include="Shaders\deferred_ps.hlsl" />
   </ItemGroup>

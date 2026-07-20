@@ -2,9 +2,7 @@
 
 void RenderingSystem::Initialize() {
     BuildRootSignature();
-    BuildShadersAndInputLayout();
-    BuildPSO();
-    BuildWavePSO();
+    BuildGeometryPSO();
     BuildDeferredRootSignature();
     BuildDeferredShaders();
     BuildDeferredPSO();
@@ -66,103 +64,48 @@ void RenderingSystem::BuildRootSignature()
         IID_PPV_ARGS(&mRootSignature)));
 }
 
-void RenderingSystem::BuildShadersAndInputLayout()
-{
-    mvsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_vs.hlsl", nullptr, "VS", "vs_5_0");
-    mpsByteCode = d3dUtil::CompileShader(L"Shaders\\texture_ps.hlsl", nullptr, "PS", "ps_5_0");
-    mWaveVSByteCode = d3dUtil::CompileShader(L"Shaders\\texture_wave_vs.hlsl", nullptr, "main", "vs_5_0");
-
-    mInputLayout =
-    {
-        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
-    };
-}
-
-void RenderingSystem::BuildPSO()
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
-    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-
-    psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
-    psoDesc.pRootSignature = mRootSignature.Get();
-    psoDesc.VS =
-    {
-        reinterpret_cast<BYTE*>(mvsByteCode->GetBufferPointer()),
-        mvsByteCode->GetBufferSize()
-    };
-    psoDesc.PS =
-    {
-        reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
-        mpsByteCode->GetBufferSize()
-    };
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.SampleDesc.Count = mMsaaState ? 4 : 1;
-    psoDesc.SampleDesc.Quality = mMsaaState ? (mMsaaQuality - 1) : 0;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mFormats[0];
-    psoDesc.DSVFormat = mDepthStencilFormat;
-    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPSO)));
-}
-
-void RenderingSystem::BuildWavePSO()
-{
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
-    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
-
-    psoDesc.InputLayout = { mInputLayout.data(), (UINT)mInputLayout.size() };
-    psoDesc.pRootSignature = mRootSignature.Get();
-    psoDesc.VS =
-    {
-        reinterpret_cast<BYTE*>(mWaveVSByteCode->GetBufferPointer()),
-        mWaveVSByteCode->GetBufferSize()
-    };
-    psoDesc.PS =
-    {
-        reinterpret_cast<BYTE*>(mpsByteCode->GetBufferPointer()),
-        mpsByteCode->GetBufferSize()
-    };
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.SampleDesc.Count = mMsaaState ? 4 : 1;
-    psoDesc.SampleDesc.Quality = mMsaaState ? (mMsaaQuality - 1) : 0;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = mFormats[0];
-    psoDesc.DSVFormat = mDepthStencilFormat;
-    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mWavePSO)));
-}
-
 void RenderingSystem::BeginFrame(ID3D12GraphicsCommandList* cmdList,
     D3D12_VIEWPORT& viewport,
     D3D12_RECT& scissor,
     GBuffer* gBuffer,
     D3D12_CPU_DESCRIPTOR_HANDLE dsv)
 {
-    if (!gBuffer) return;
     gBuffer->TransitionToRenderTarget(cmdList);
-    gBuffer->SetAsRenderTargets(cmdList, &dsv);
-    gBuffer->Clear(cmdList);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3] = {
+    gBuffer->GetRtv(0),
+    gBuffer->GetRtv(1),
+    gBuffer->GetRtv(2)
+    };
+    cmdList->OMSetRenderTargets(3, rtvs, false, &dsv);
+
+    float clearAlbedo[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    float clearNormal[4] = { 0.5f, 0.5f, 1.0f, 0.0f };
+    float clearPosition[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    cmdList->ClearRenderTargetView(gBuffer->GetRtv(0), clearAlbedo, 0, nullptr);
+    cmdList->ClearRenderTargetView(gBuffer->GetRtv(1), clearNormal, 0, nullptr);
+    cmdList->ClearRenderTargetView(gBuffer->GetRtv(2), clearPosition, 0, nullptr);
+    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
     cmdList->RSSetViewports(1, &viewport);
     cmdList->RSSetScissorRects(1, &scissor);
+
+    cmdList->SetPipelineState(mGeometryPSO.Get());
     cmdList->SetGraphicsRootSignature(mRootSignature.Get());
+
     mViewport = viewport;
     mScissor = scissor;
+
 }
 
 void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     const RenderItem& item,
     ID3D12DescriptorHeap* mainHeap,
-    ID3D12DescriptorHeap* samplerHeap)
+    ID3D12DescriptorHeap* samplerHeap,
+    bool isGeometryPass)
 {
-    ID3D12PipelineState* pso = (item.Shader == ShaderType::WAVE) ? mWavePSO.Get() : mPSO.Get();
-    cmdList->SetPipelineState(pso);
+    cmdList->SetPipelineState(mGeometryPSO.Get());
 
     ID3D12DescriptorHeap* heaps[] = { mainHeap, samplerHeap };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
@@ -193,23 +136,23 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
 void RenderingSystem::BuildDeferredRootSignature()
 {
     // Root signature для deferred lighting pass
-    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+    CD3DX12_ROOT_PARAMETER slotRootParameter[4];
 
-    // 3 текстуры G-Buffer (Albedo, Normal, Position)
+    // 3 текстуры G-Buffer
     CD3DX12_DESCRIPTOR_RANGE srvTable;
-    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // t0, t1, t2
+    srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);
     slotRootParameter[0].InitAsDescriptorTable(1, &srvTable);
 
-    CD3DX12_DESCRIPTOR_RANGE cbvTable;
-    cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0); // b0
-    slotRootParameter[1].InitAsDescriptorTable(1, &cbvTable);
+    slotRootParameter[1].InitAsConstantBufferView(0);
+
+    slotRootParameter[2].InitAsShaderResourceView(3);
 
     // Sampler
     CD3DX12_DESCRIPTOR_RANGE samplerTable;
     samplerTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);
-    slotRootParameter[2].InitAsDescriptorTable(1, &samplerTable);
+    slotRootParameter[3].InitAsDescriptorTable(1, &samplerTable);
 
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(3, slotRootParameter, 0, nullptr,
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter, 0, nullptr,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
@@ -241,21 +184,24 @@ void RenderingSystem::BuildDeferredPSO()
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
 
-    psoDesc.InputLayout = { nullptr, 0 }; // Нет вершинных буферов (full-screen quad)
+    psoDesc.InputLayout = { nullptr, 0 };
     psoDesc.pRootSignature = mDeferredRootSig.Get();
     psoDesc.VS = { mDeferredVSByteCode->GetBufferPointer(), mDeferredVSByteCode->GetBufferSize() };
     psoDesc.PS = { mDeferredPSByteCode->GetBufferPointer(), mDeferredPSByteCode->GetBufferSize() };
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     psoDesc.DepthStencilState.DepthEnable = FALSE;
     psoDesc.DepthStencilState.StencilEnable = FALSE;
+
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.SampleDesc.Count = 1;
     psoDesc.SampleDesc.Quality = 0;
     psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; // Back buffer format
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mDeferredPSO)));
 }
@@ -264,10 +210,11 @@ void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* cbvHeap,
     ID3D12DescriptorHeap* samplerHeap,
     UINT descriptorSize,
-    GBuffer* gBuffer)
+    GBuffer* gBuffer,
+    D3D12_GPU_VIRTUAL_ADDRESS passCBAddress,
+    D3D12_GPU_VIRTUAL_ADDRESS lightBufferAddress,
+    UINT numLights)
 {
-    if (!gBuffer) return;
-
     gBuffer->TransitionToShaderResource(cmdList);
 
     // Биндим обе heap
@@ -277,23 +224,58 @@ void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
     cmdList->SetGraphicsRootSignature(mDeferredRootSig.Get());
     cmdList->SetPipelineState(mDeferredPSO.Get());
 
-    // Слот 0: G-Buffer SRV (смещение 2 = kGBufferSrvBase)
+    // Слот 0: G-Buffer SRV
     CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(
         cbvHeap->GetGPUDescriptorHandleForHeapStart());
     srvHandle.Offset(2, descriptorSize);
     cmdList->SetGraphicsRootDescriptorTable(0, srvHandle);
 
-    // Слот 1: CBV (слот 0 в куче)
-    CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(
-        cbvHeap->GetGPUDescriptorHandleForHeapStart());
-    cmdList->SetGraphicsRootDescriptorTable(1, cbvHandle);
+    cmdList->SetGraphicsRootConstantBufferView(1, passCBAddress);
+
+    cmdList->SetGraphicsRootShaderResourceView(2, lightBufferAddress);
 
     // Слот 2: Sampler
-    cmdList->SetGraphicsRootDescriptorTable(2,
+    cmdList->SetGraphicsRootDescriptorTable(3,
         samplerHeap->GetGPUDescriptorHandleForHeapStart());
-
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->RSSetViewports(1, &mViewport);
     cmdList->RSSetScissorRects(1, &mScissor);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     cmdList->DrawInstanced(3, 1, 0, 0);
+}
+
+void RenderingSystem::BuildGeometryPSO()
+{
+    auto vs = d3dUtil::CompileShader(L"Shaders\\geometry_vs.hlsl", nullptr, "main", "vs_5_0");
+    auto ps = d3dUtil::CompileShader(L"Shaders\\geometry_ps.hlsl", nullptr, "main", "ps_5_0");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc;
+    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+
+    // Input Layout для Geometry Pass
+    std::vector<D3D12_INPUT_ELEMENT_DESC> geoInputLayout =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    psoDesc.InputLayout = { geoInputLayout.data(), (UINT)geoInputLayout.size() };
+    psoDesc.pRootSignature = mRootSignature.Get();
+    psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.SampleDesc.Count = mMsaaState ? 4 : 1;
+    psoDesc.SampleDesc.Quality = mMsaaState ? (mMsaaQuality - 1) : 0;
+
+    psoDesc.NumRenderTargets = 3;
+    psoDesc.RTVFormats[0] = mFormats[0];
+    psoDesc.RTVFormats[1] = mFormats[1];
+    psoDesc.RTVFormats[2] = mFormats[2];
+    psoDesc.DSVFormat = mDepthStencilFormat;
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mGeometryPSO)));
 }
