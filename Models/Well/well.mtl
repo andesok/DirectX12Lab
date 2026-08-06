@@ -1,0 +1,38 @@
+# Blender 5.2.0 LTS MTL File: 'Well.blend'
+# www.blender.org
+
+newmtl SM_Well:M_Well_02
+Ns 0.000000
+Ka 1.000000 1.000000 1.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd textures/Well_01_Albedo.png
+map_refl textures/Well_01_Metal.png
+map_Bump -bm 1.000000 textures/Well_01_Normal.png
+
+newmtl SM_Well:M_Well_04
+Ka 1.000000 1.000000 1.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd textures/Well_02_Albedo.png
+map_Ns textures/Well_02_Roughness.png
+map_refl textures/Well_02_Metal.png
+map_Bump -bm 1.000000 textures/Well_02_Normal.png
+
+newmtl SM_Well:M_Well_Bucket1
+Ka 1.000000 1.000000 1.000000
+Ks 1.000000 1.000000 1.000000
+Ke 0.000000 0.000000 0.000000
+Ni 1.500000
+d 1.000000
+illum 2
+map_Kd textures/Well_Bucket_Albedo.png
+map_Ns textures/Well_Bucket_Roughness.png
+map_refl textures/Well_Bucket_Metal.png
+map_Bump -bm 1.000000 textures/Well_Bucket_Normal.png

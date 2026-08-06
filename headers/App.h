@@ -29,6 +29,18 @@ struct MeshTexture
     ComPtr<ID3D12Resource> UploadHeap = nullptr;
 };
 
+struct TessellationConstants
+{
+    DirectX::XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
+    DirectX::XMFLOAT4X4 World = MathHelper::Identity4x4();
+    DirectX::XMFLOAT4X4 WorldInvTranspose = MathHelper::Identity4x4();
+    DirectX::XMFLOAT3 EyePosW = { 0.0f, 0.0f, 0.0f };
+    float TessellationFactor = 16.0f;
+    float DisplacementScale = 0.5f;
+    float pad0 = 0.0f;
+    float pad1 = 0.0f;
+};
+
 struct SubMeshInfo {
     std::string name;
     UINT indexCount;
@@ -74,6 +86,8 @@ private:
     void BuildDescriptorHeaps();
     void BuildConstantBuffers();
     void LoadAllTextures();
+    void LoadDisplacementTexture();
+
     void LoadTextureForMaterial(const SubMeshInfo& submesh, int srvIndex);
     void BuildSampler();
 
@@ -113,20 +127,17 @@ private:
     
 
 
-    std::vector<Light> mLights;  // ← БЕЗГРАНИЧНОЕ КОЛИЧЕСТВО!
+    std::vector<Light> mLights;
 
-    // Удобные ссылки на конкретные источники
     Light* mMainLight = nullptr;
-    Light* mPointLight = nullptr;
-    Light* mSpotLight = nullptr;
-    Light* mPointLight2 = nullptr;
 
     std::unique_ptr<UploadBuffer<Light>> mLightBuffer;
     UINT mLightBufferSize = 0;
 
+    int mDisplacementTexIndex = -1;
+    std::unique_ptr<UploadBuffer<TessellationConstants>> mTessCB;
 
-
-    DirectX::XMFLOAT4 mAmbientLight = { 0.05f, 0.05f, 0.05f, 1.0f };
+    DirectX::XMFLOAT4 mAmbientLight = { 0.3f, 0.3f, 0.3f, 1.0f };
 
     std::vector<std::unique_ptr<MeshTexture>> mTextures;
     std::unordered_map<std::string, UINT> mTextureIndexMap;

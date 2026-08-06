@@ -6,6 +6,8 @@ void RenderingSystem::Initialize() {
     BuildDeferredRootSignature();
     BuildDeferredShaders();
     BuildDeferredPSO();
+    BuildTessellationRootSignature();
+    BuildTessellationPSO();
 }
 
 RenderingSystem::RenderingSystem(
@@ -105,32 +107,104 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     ID3D12DescriptorHeap* samplerHeap,
     bool isGeometryPass)
 {
-    cmdList->SetPipelineState(mGeometryPSO.Get());
+    // ============================================
+    // 1. ВЫБИРАЕМ PSO И ROOT SIGNATURE
+    // ============================================
+    ID3D12PipelineState* pso = nullptr;
+    ID3D12RootSignature* rootSig = nullptr;
 
+    if (isGeometryPass && item.UseTessellation)
+    {
+        pso = mTessellationPSO.Get();
+        rootSig = mTessellationRootSig.Get();
+    }
+    else if (isGeometryPass)
+    {
+        pso = mGeometryPSO.Get();
+        rootSig = mRootSignature.Get();
+    }
+    else
+    {
+        pso = mGeometryPSO.Get();
+        rootSig = mRootSignature.Get();
+    }
+
+    cmdList->SetPipelineState(pso);
+    cmdList->SetGraphicsRootSignature(rootSig);
+
+    // ============================================
+    // 2. ПРИВЯЗЫВАЕМ КУЧИ ДЕСКРИПТОРОВ
+    // ============================================
     ID3D12DescriptorHeap* heaps[] = { mainHeap, samplerHeap };
     cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
 
+    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
     auto handle = mainHeap->GetGPUDescriptorHandleForHeapStart();
-    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    auto cbvHandle = handle;
-    cbvHandle.ptr += item.CBIndex * descriptorSize;
-    cmdList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+    // ============================================
+    // 3. ПРИВЯЗЫВАЕМ РЕСУРСЫ
+    // ============================================
+    if (item.UseTessellation)
+    {
+        // Слот 0: CBV (уже привязан в App::Draw)
+        // Слот 1: Текстуры (Descriptor Table)
+        auto srvHandle = handle;
+        srvHandle.ptr += item.SRVIndex * descriptorSize;
+        cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
 
-    auto srvHandle = handle;
-    srvHandle.ptr += item.SRVIndex * descriptorSize;
-    cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
+        // Слот 2: Sampler (Descriptor Table)
+        cmdList->SetGraphicsRootDescriptorTable(2,
+            samplerHeap->GetGPUDescriptorHandleForHeapStart());
+    }
+    else
+    {
+        // Слот 0: CBV
+        auto cbvHandle = handle;
+        cbvHandle.ptr += item.CBIndex * descriptorSize;
+        cmdList->SetGraphicsRootDescriptorTable(0, cbvHandle);
 
-    cmdList->SetGraphicsRootDescriptorTable(2, samplerHeap->GetGPUDescriptorHandleForHeapStart());
+        // Слот 1: SRV
+        auto srvHandle = handle;
+        srvHandle.ptr += item.SRVIndex * descriptorSize;
+        cmdList->SetGraphicsRootDescriptorTable(1, srvHandle);
 
+        // Слот 2: Sampler
+        cmdList->SetGraphicsRootDescriptorTable(2,
+            samplerHeap->GetGPUDescriptorHandleForHeapStart());
+    }
+
+    // ============================================
+    // 4. ПРИВЯЗЫВАЕМ ГЕОМЕТРИЮ
+    // ============================================
     auto vbv = item.Mesh->VertexBufferView();
     auto ibv = item.Mesh->IndexBufferView();
     cmdList->IASetVertexBuffers(0, 1, &vbv);
     cmdList->IASetIndexBuffer(&ibv);
-    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+    // ============================================
+    // 5. ТОПОЛОГИЯ
+    // ============================================
+    if (item.UseTessellation)
+    {
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+    }
+    else
+    {
+        cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    }
+
+    // ============================================
+    // 6. РИСУЕМ
+    // ============================================
     auto& submesh = item.Mesh->DrawArgs[item.SubmeshName];
-    cmdList->DrawIndexedInstanced(submesh.IndexCount, 1, submesh.StartIndexLocation, submesh.BaseVertexLocation, 0);
+    cmdList->DrawIndexedInstanced(
+        submesh.IndexCount,
+        1,
+        submesh.StartIndexLocation,
+        submesh.BaseVertexLocation,
+        0);
 }
 
 void RenderingSystem::BuildDeferredRootSignature()
@@ -278,4 +352,139 @@ void RenderingSystem::BuildGeometryPSO()
     psoDesc.DSVFormat = mDepthStencilFormat;
 
     ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mGeometryPSO)));
+}
+
+void RenderingSystem::BuildTessellationPSO()
+{
+    auto vs = d3dUtil::CompileShader(L"Shaders\\tessellation_vs.hlsl", nullptr, "main", "vs_5_0");
+    auto hs = d3dUtil::CompileShader(L"Shaders\\tessellation_hs.hlsl", nullptr, "main", "hs_5_0");
+    auto ds = d3dUtil::CompileShader(L"Shaders\\tessellation_ds.hlsl", nullptr, "main", "ds_5_0");
+    auto ps = d3dUtil::CompileShader(L"Shaders\\tessellation_ps.hlsl", nullptr, "main", "ps_5_0");
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    ZeroMemory(&psoDesc, sizeof(D3D12_GRAPHICS_PIPELINE_STATE_DESC));
+
+    // ============================================
+    // 1. ROOT SIGNATURE
+    // ============================================
+    psoDesc.pRootSignature = mTessellationRootSig.Get();
+
+    // ============================================
+    // 2. ШЕЙДЕРЫ
+    // ============================================
+    psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.HS = { hs->GetBufferPointer(), hs->GetBufferSize() };
+    psoDesc.DS = { ds->GetBufferPointer(), ds->GetBufferSize() };
+    psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+
+    // ============================================
+    // 3. INPUT LAYOUT (для вершинного шейдера)
+    // ============================================
+    std::vector<D3D12_INPUT_ELEMENT_DESC> inputLayout = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+    psoDesc.InputLayout = { inputLayout.data(), (UINT)inputLayout.size() };
+
+    // ============================================
+    // 4. ПРИМИТИВЫ — ВАЖНО: PATCH!
+    // ============================================
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
+
+    // ============================================
+    // 5. RASTERIZER STATE
+    // ============================================
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+
+    // ============================================
+    // 6. BLEND STATE
+    // ============================================
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
+    // ============================================
+    // 7. DEPTH STENCIL STATE
+    // ============================================
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState.DepthEnable = TRUE;
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+    // ============================================
+    // 8. SAMPLE MASK
+    // ============================================
+    psoDesc.SampleMask = UINT_MAX;
+
+    // ============================================
+    // 9. RENDER TARGET
+    // ============================================
+    psoDesc.NumRenderTargets = 3;
+    psoDesc.RTVFormats[0] = mFormats[0];
+    psoDesc.RTVFormats[1] = mFormats[1];
+    psoDesc.RTVFormats[2] = mFormats[2];
+    psoDesc.DSVFormat = mDepthStencilFormat;
+
+    // ============================================
+    // 10. MULTISAMPLING
+    // ============================================
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.SampleDesc.Quality = 0;
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mTessellationPSO)));
+}
+
+void RenderingSystem::BuildTessellationRootSignature()
+{
+    // ============================================
+    // 3 СЛОТА: CBV + SRV + Sampler
+    // ============================================
+    CD3DX12_ROOT_PARAMETER slotRootParameter[3];
+
+    // Слот 0: Константы тесселяции (CBV)
+    slotRootParameter[0].InitAsConstantBufferView(0);  // b0
+
+    // Слот 1: Текстуры (Descriptor Table) — t0, t1, t2
+    CD3DX12_DESCRIPTOR_RANGE texTable;
+    texTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0);  // t0, t1, t2
+    slotRootParameter[1].InitAsDescriptorTable(1, &texTable);
+
+    // ============================================
+    // Слот 2: СЕМПЛЕР (s0)
+    // ============================================
+    CD3DX12_DESCRIPTOR_RANGE samplerTable;
+    samplerTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);  // s0
+    slotRootParameter[2].InitAsDescriptorTable(1, &samplerTable);
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(
+        3,                      // ← ТЕПЕРЬ 3!
+        slotRootParameter,
+        0,
+        nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT
+    );
+
+    ComPtr<ID3DBlob> serializedRootSig = nullptr;
+    ComPtr<ID3DBlob> errorBlob = nullptr;
+    HRESULT hr = D3D12SerializeRootSignature(
+        &rootSigDesc,
+        D3D_ROOT_SIGNATURE_VERSION_1,
+        serializedRootSig.GetAddressOf(),
+        errorBlob.GetAddressOf()
+    );
+
+    if (errorBlob != nullptr)
+    {
+        ::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    }
+    ThrowIfFailed(hr);
+
+    ThrowIfFailed(md3dDevice->CreateRootSignature(
+        0,
+        serializedRootSig->GetBufferPointer(),
+        serializedRootSig->GetBufferSize(),
+        IID_PPV_ARGS(&mTessellationRootSig)
+    ));
 }

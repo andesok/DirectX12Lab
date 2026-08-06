@@ -40,5 +40,5 @@ struct PassConstants
     float pad1 = 0.0f;
     float pad2 = 0.0f;
     float pad3 = 0.0f;
-    //Light Lights[16];
+    Light Lights[16];
 };

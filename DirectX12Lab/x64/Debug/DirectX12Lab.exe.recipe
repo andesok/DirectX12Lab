@@ -18,6 +18,18 @@
     <ContentFile>
       <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\geometry_vs.cso</FullPath>
     </ContentFile>
+    <ContentFile>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\tessellation_ds.cso</FullPath>
+    </ContentFile>
+    <ContentFile>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\tessellation_hs.cso</FullPath>
+    </ContentFile>
+    <ContentFile>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\tessellation_ps.cso</FullPath>
+    </ContentFile>
+    <ContentFile>
+      <FullPath>E:\Git Projects\DirectX12Lab\x64\Debug\tessellation_vs.cso</FullPath>
+    </ContentFile>
   </ContentFiles>
   <SatelliteDlls />
   <NonRecipeFileRefs />

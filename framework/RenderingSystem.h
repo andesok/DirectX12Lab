@@ -26,6 +26,7 @@ struct RenderItem {
     UINT CBIndex = 0;
     UINT SRVIndex = 0;
     ShaderType Shader = ShaderType::TEXTURE;
+    bool UseTessellation = false;
 };
 
 class RenderingSystem {
@@ -54,6 +55,8 @@ public:
         D3D12_GPU_VIRTUAL_ADDRESS lightBufferAddress,
         UINT numLights);
     ID3D12RootSignature* GetRootSignature() const { return mRootSignature.Get(); }
+    ID3D12PipelineState* GetTessellationPSO() const { return mTessellationPSO.Get(); }
+    ID3D12RootSignature* GetTessellationRootSig() const { return mTessellationRootSig.Get(); }
 
 private:
     void BuildRootSignature();
@@ -61,6 +64,8 @@ private:
     void BuildDeferredRootSignature();
     void BuildDeferredShaders();
     void BuildDeferredPSO();
+    void BuildTessellationPSO();
+    void BuildTessellationRootSignature();
 
 private:
     ID3D12Device* md3dDevice;
@@ -87,4 +92,6 @@ private:
     D3D12_VIEWPORT mViewport;
     D3D12_RECT mScissor;
 
+    ComPtr<ID3D12PipelineState> mTessellationPSO;
+    ComPtr<ID3D12RootSignature> mTessellationRootSig;
 };

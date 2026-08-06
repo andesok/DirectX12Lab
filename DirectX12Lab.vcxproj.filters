@@ -95,5 +95,9 @@
     <FxCompile Include="Shaders\geometry_ps.hlsl" />
     <FxCompile Include="Shaders\fullscreen_vs.hlsl" />
     <FxCompile Include="Shaders\deferred_ps.hlsl" />
+    <FxCompile Include="Shaders\tessellation_vs.hlsl" />
+    <FxCompile Include="Shaders\tessellation_hs.hlsl" />
+    <FxCompile Include="Shaders\tessellation_ds.hlsl" />
+    <FxCompile Include="Shaders\tessellation_ps.hlsl" />
   </ItemGroup>
 </Project>

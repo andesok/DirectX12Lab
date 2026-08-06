@@ -145,8 +145,8 @@ float4 main(PSInput input) : SV_Target
     {
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     }
-    
-    float3 N = normalize(normal.xyz);
+
+    float3 N = normalize(normal.xyz * 2.0f - 1.0f);
     float3 posW = position.xyz;
     float3 V = normalize(gEyePosW - posW);
     

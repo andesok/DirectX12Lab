@@ -35,13 +35,13 @@ bool App::Initialize()
 		
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-    BuildModelGeometry("Models/Sponza/sponza.obj", "Models/Sponza/");
+    BuildModelGeometry("Models/Well/well.obj", "Models/Well/");
 
     BuildDescriptorHeaps();
     BuildConstantBuffers();
 
     mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
-
+    mTessCB = std::make_unique<UploadBuffer<TessellationConstants>>(md3dDevice.Get(), 1, true);
 
     const UINT maxLights = 256;
     mLightBuffer = std::make_unique<UploadBuffer<Light>>(
@@ -53,45 +53,10 @@ bool App::Initialize()
     // 1. Направленный свет
     Light dirLight;
     dirLight.Type = LIGHT_TYPE_DIRECTIONAL;
-    dirLight.Strength = { 1.0f, 0.8f, 0.6f };
-    dirLight.Direction = { 1.0f, -1.0f, 1.0f };
+    dirLight.Strength = { 1.0f, 1.0f, 1.0f };
+    dirLight.Direction = { 1.0f, 1.0f, 1.0f };
     mLights.push_back(dirLight);
     mMainLight = &mLights.back();
-
-
-    // 2. Точечный свет
-    Light pointLight;
-    pointLight.Type = LIGHT_TYPE_POINT;
-    pointLight.Strength = { 100.0f, 0.0f, 0.0f };
-    pointLight.Position = { 710.0f, 100.0f, 0.0f };
-    pointLight.Range = 400.0f;
-    pointLight.FalloffStart = 0.0f;
-    pointLight.FalloffEnd = pointLight.Range;
-    mLights.push_back(pointLight);
-    mPointLight = &mLights.back();
-
-    // 3. Прожектор
-    Light spotLight;
-    spotLight.Type = LIGHT_TYPE_SPOT;
-    spotLight.Strength = { 0.0f, 100.0f, 0.0f };
-    spotLight.Position = { 0.0f, 200.0f, 0.0f };
-    spotLight.Direction = { 0.0f, -1.0f, 0.0f };
-    spotLight.Range = 300.0f;
-    spotLight.SpotPower = 1.0f;
-    spotLight.FalloffStart = spotLight.Range - 50.0f;
-    spotLight.FalloffEnd = spotLight.Range;
-    mLights.push_back(spotLight);
-    mSpotLight = &mLights.back();
-
-    Light pointLight2;
-    pointLight2.Type = LIGHT_TYPE_POINT;
-    pointLight2.Strength = { 0.0f, 0.0f, 150.0f };
-    pointLight2.Position = { -700.0f, 500.0f, 400.0f };
-    pointLight2.Range = 300.0f;
-    pointLight2.FalloffStart = 0.0f;
-    pointLight2.FalloffEnd = pointLight2.Range;
-    mLights.push_back(pointLight2);
-    mPointLight2 = &mLights.back();
 
     LoadAllTextures();
 
@@ -231,9 +196,6 @@ void App::Update(const GameTimer& gt)
     // Обновляем константный буфер
     mPassCB->CopyData(0, passConstants);
 
-    // ============================================
-    // КОПИРУЕМ ВСЕ ИСТОЧНИКИ В БУФЕР
-    // ============================================
     UINT lightCount = (UINT)mLights.size();
     if (lightCount > mLightBufferSize)
     {
@@ -261,18 +223,16 @@ void App::Draw(const GameTimer& gt)
     ID3D12DescriptorHeap* heaps[] = { mCbvHeap.Get(), mSamplerHeap.Get() };
     mCommandList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 0, descriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(0, cbvHandle);
-
-    CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), 1, descriptorSize);
-    mCommandList->SetGraphicsRootDescriptorTable(1, srvHandle);
-
-    mCommandList->SetGraphicsRootDescriptorTable(2, mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
-
+    // ============================================
+    // 1. ОБЫЧНЫЙ РЕНДЕРИНГ (ВСЁ, КРОМЕ КОЛОДЦА)
+    // ============================================
     for (const auto& submeshInfo : mSubMeshInfos)
     {
+        if (submeshInfo.name.find("Well") != std::string::npos) continue;
+
         RenderItem item;
         item.Mesh = mGeo.get();
         item.SubmeshName = submeshInfo.name;
@@ -281,9 +241,92 @@ void App::Draw(const GameTimer& gt)
             ? kTextureSrvBase + submeshInfo.textureIndex
             : kTextureSrvBase;
 
-        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(), mSamplerHeap.Get(),true);
+        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(),
+            mSamplerHeap.Get(), true);
     }
 
+    // ============================================
+    // 2. ТЕССЕЛЯЦИЯ КОЛОДЦА
+    // ============================================
+    if (mRenderSystem->GetTessellationPSO() && mTessCB && mDisplacementTexIndex >= 0)
+    {
+        // Обновляем константы тесселяции
+        XMMATRIX view = mCamera->GetView();
+        XMMATRIX proj = mCamera->GetProj();
+        XMMATRIX world = XMLoadFloat4x4(&mWorld);
+        XMMATRIX worldViewProj = world * view * proj;
+        XMMATRIX worldInvTranspose = XMMatrixTranspose(XMMatrixInverse(nullptr, world));
+
+        TessellationConstants tessConstants;
+        XMStoreFloat4x4(&tessConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
+        XMStoreFloat4x4(&tessConstants.World, XMMatrixTranspose(world));
+        XMStoreFloat4x4(&tessConstants.WorldInvTranspose, XMMatrixTranspose(worldInvTranspose));
+        tessConstants.EyePosW = mCamera->GetPosition3f();
+        tessConstants.TessellationFactor = 16.0f;
+        tessConstants.DisplacementScale = 0.01f;
+
+        mTessCB->CopyData(0, tessConstants);
+
+        // Привязываем PSO тесселяции
+        mCommandList->SetPipelineState(mRenderSystem->GetTessellationPSO());
+        mCommandList->SetGraphicsRootSignature(mRenderSystem->GetTessellationRootSig());
+
+        // Константы (слот 0)
+        mCommandList->SetGraphicsRootConstantBufferView(0,
+            mTessCB->Resource()->GetGPUVirtualAddress());
+
+        // ============================================
+        // РИСУЕМ КАЖДЫЙ SUBMESH КОЛОДЦА С ЕГО ТЕКСТУРОЙ
+        // ============================================
+        for (const auto& submeshInfo : mSubMeshInfos)
+        {
+            if (submeshInfo.name.find("Well") == std::string::npos) continue;
+
+            // ============================================
+            // ПРИВЯЗЫВАЕМ ТЕКСТУРУ ДЛЯ ЭТОГО SUBMESH
+            // ============================================
+            // Для тесселяции используем ту же текстуру, что и для обычного рендеринга
+            int srvIndex = (submeshInfo.textureIndex >= 0)
+                ? kTextureSrvBase + submeshInfo.textureIndex
+                : kTextureSrvBase;
+
+            CD3DX12_GPU_DESCRIPTOR_HANDLE texHandle(
+                mCbvHeap->GetGPUDescriptorHandleForHeapStart(),
+                srvIndex,
+                descriptorSize);
+            mCommandList->SetGraphicsRootDescriptorTable(1, texHandle);
+
+            // Геометрия
+            auto vbv = mGeo->VertexBufferView();
+            auto ibv = mGeo->IndexBufferView();
+            mCommandList->IASetVertexBuffers(0, 1, &vbv);
+            mCommandList->IASetIndexBuffer(&ibv);
+
+            // Топология: 3 контрольные точки
+            mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST);
+
+            auto& submesh = mGeo->DrawArgs[submeshInfo.name];
+            mCommandList->DrawIndexedInstanced(
+                submesh.IndexCount,
+                1,
+                submesh.StartIndexLocation,
+                submesh.BaseVertexLocation,
+                0);
+        }
+
+        // Семплер (слот 2) — можно привязать один раз до цикла
+        // mCommandList->SetGraphicsRootDescriptorTable(2,
+        //     mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+        // Но он уже привязан в DrawItem для обычных объектов.
+        // Для тесселяции привяжем его здесь:
+        mCommandList->SetGraphicsRootDescriptorTable(2,
+            mSamplerHeap->GetGPUDescriptorHandleForHeapStart());
+    }
+
+
+    // ============================================
+    // LIGHTING PASS
+    // ============================================
     auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
     mCommandList->ResourceBarrier(1, &transition);
@@ -345,7 +388,8 @@ void App::BuildDescriptorHeaps()
     // Слот 1: SRV текстура-заглушка (опционально)
     // Слот 2..2+N: G-Buffer SRV (3 штуки)
     // Слот 5..5+mUniqueTextureCount: текстуры мешей
-    UINT totalDescriptors = 5 + mUniqueTextureCount;
+
+    UINT totalDescriptors = 9 + mUniqueTextureCount;
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
     cbvHeapDesc.NumDescriptors = totalDescriptors;
@@ -403,8 +447,31 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
     mSubMeshInfos.clear();
 
     // Словарь для уникальных материалов
-    std::unordered_map<std::string, int> uniqueMaterials;
+    std::unordered_map<std::string, int> materialTextureMap;
     int nextTextureIndex = 0;
+
+    // ============================================
+    // 1. ПРОХОДИМ ПО ВСЕМ МАТЕРИАЛАМ И ЗАПОМИНАЕМ ТЕКСТУРЫ
+    // ============================================
+    for (size_t i = 0; i < materials.size(); i++)
+    {
+        const auto& mat = materials[i];
+        if (!mat.diffuse_texname.empty())
+        {
+            std::string fullPath = baseDir + mat.diffuse_texname;
+
+            // Заменяем .png/.tga на .dds
+            size_t dotPos = fullPath.rfind('.');
+            if (dotPos != std::string::npos)
+                fullPath = fullPath.substr(0, dotPos) + ".dds";
+
+            materialTextureMap[mat.name] = nextTextureIndex;
+            nextTextureIndex++;
+
+            OutputDebugStringA(("Material: " + mat.name + " -> Texture: " + fullPath + "\n").c_str());
+        }
+    }
+
 
     for (size_t shapeIdx = 0; shapeIdx < shapes.size(); ++shapeIdx)
     {
@@ -421,35 +488,25 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
         {
             submeshInfo.materialName = materials[materialId].name;
 
-            // Получаем путь к диффузной текстуре
-            if (!materials[materialId].diffuse_texname.empty())
+            auto it = materialTextureMap.find(submeshInfo.materialName);
+            if (it != materialTextureMap.end())
             {
-                std::string texPath = baseDir + materials[materialId].diffuse_texname;
+                submeshInfo.textureIndex = it->second;
 
-                // Заменяем .tga на .dds
-                size_t dotPos = texPath.rfind('.');
+                std::string fullPath = baseDir + materials[materialId].diffuse_texname;
+
+                // Заменяем .png/.tga на .dds
+                size_t dotPos = fullPath.rfind('.');
                 if (dotPos != std::string::npos)
-                    texPath = texPath.substr(0, dotPos) + ".dds";
+                    fullPath = fullPath.substr(0, dotPos) + ".dds";
 
-                submeshInfo.texturePath = std::wstring(texPath.begin(), texPath.end());
-
-                // Проверяем, загружали ли уже эту текстуру
-                auto it = uniqueMaterials.find(submeshInfo.materialName);
-                if (it == uniqueMaterials.end())
-                {
-                    uniqueMaterials[submeshInfo.materialName] = nextTextureIndex;
-                    submeshInfo.textureIndex = nextTextureIndex;
-                    nextTextureIndex++;
-                }
-                else
-                {
-                    submeshInfo.textureIndex = it->second;
-                }
+                // Конвертируем в wstring
+                submeshInfo.texturePath = std::wstring(fullPath.begin(), fullPath.end());
             }
             else
             {
+                submeshInfo.textureIndex = -1;
                 submeshInfo.texturePath = L"";
-                submeshInfo.textureIndex = -1; // Нет текстуры
             }
         }
         else
@@ -479,7 +536,7 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
                 };
             }
             else {
-                v.Normal = { 0.0f, 1.0f, 0.0f }; // fallback, чтобы не было NaN/мусора
+                v.Normal = { 0.0f, 1.0f, 0.0f };
             }
 
             if (index.texcoord_index >= 0) {
@@ -509,6 +566,10 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
 
         mGeo->DrawArgs[submeshInfo.name] = submesh;
         mSubMeshInfos.push_back(submeshInfo);
+
+        OutputDebugStringA(("SubMesh: " + submeshInfo.name +
+            " Material: " + submeshInfo.materialName +
+            " TexIndex: " + std::to_string(submeshInfo.textureIndex) + "\n").c_str());
     }
 
     // Создаём GPU буферы
@@ -532,53 +593,89 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
     mUniqueTextureCount = nextTextureIndex;
 }
 
-void App::LoadTextureForMaterial(const SubMeshInfo& submesh, int srvIndex)
-{
-    if (submesh.texturePath.empty())
-    {
-        // Создаём белую текстуру-заглушку для материалов без текстуры
-        // Для простоты пока пропускаем
-        return;
-    }
-
-    // Загружаем текстуру
-    auto texture = std::make_unique<MeshTexture>();
-    ThrowIfFailed(CreateDDSTextureFromFile12(
-        md3dDevice.Get(),
-        mCommandList.Get(),
-        submesh.texturePath.c_str(),
-        texture->Resource,
-        texture->UploadHeap));
-
-    // Сохраняем текстуру (нужно хранилище для всех текстур)
-    // mTextures.push_back(std::move(texture));
-
-    // Создаём SRV в куче
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = texture->Resource->GetDesc().Format;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels = 1;
-
-    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
-        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    // SRV для текстуры (начинаем с индекса 2, так как 0 и 1 заняты)
-    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
-        mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
-        2 + srvIndex,
-        descriptorSize);
-
-    md3dDevice->CreateShaderResourceView(texture->Resource.Get(), &srvDesc, hDescriptor);
-}
-
 void App::LoadAllTextures()
 {
     UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Собираем уникальные текстуры (materialName -> textureIndex уже в mSubMeshInfos)
+    // ============================================
+    // ЗАГРУЖАЕМ ТЕКСТУРЫ ПО ПОРЯДКУ ИЗ materialTextureMap
+    // ============================================
+    std::unordered_map<std::string, int> materialTextureMap;
+    int nextTextureIndex = 0;
+
+    for (const auto& submesh : mSubMeshInfos)
+    {
+        if (submesh.texturePath.empty()) continue;
+        if (materialTextureMap.find(submesh.materialName) != materialTextureMap.end()) continue;
+
+        materialTextureMap[submesh.materialName] = nextTextureIndex;
+        nextTextureIndex++;
+    }
+
+    // ============================================
+    // ТЕКСТУРЫ ДЛЯ ТЕССЕЛЯЦИИ (ПОДРЯД!)
+    // Слоты: kTextureSrvBase+0 = Альбедо, +1 = Нормаль, +2 = Displacement
+    // ============================================
+    int tessBase = kTextureSrvBase;
+
+    // Локальная лямбда: грузит DDS, создаёт SRV в нужный слот,
+    // и КЛАДЁТ ресурс в mTextures, чтобы он не был удалён раньше,
+    // чем GPU выполнит команды копирования.
+    auto LoadTessTexture = [&](const wchar_t* filename, int slot) -> bool
+        {
+            auto tex = std::make_unique<MeshTexture>();
+            tex->Filename = filename;
+
+            HRESULT hr = CreateDDSTextureFromFile12(
+                md3dDevice.Get(),
+                mCommandList.Get(),
+                filename,
+                tex->Resource,
+                tex->UploadHeap);
+
+            if (FAILED(hr))
+            {
+                OutputDebugStringA("Failed to load tessellation texture\n");
+                return false;
+            }
+
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = tex->Resource->GetDesc().Format;
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MostDetailedMip = 0;
+            srvDesc.Texture2D.MipLevels = -1;
+
+            CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
+                mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
+                slot,
+                descriptorSize);
+
+            md3dDevice->CreateShaderResourceView(tex->Resource.Get(), &srvDesc, hDescriptor);
+
+            // ВАЖНО: держим ресурс живым до FlushCommandQueue в конце Initialize().
+            // Раньше локальный unique_ptr удалялся в конце функции -> ресурс
+            // освобождался ДО того, как GPU выполнил CopyTextureRegion ->
+            // OBJECT_DELETED_WHILE_STILL_IN_USE -> DEVICE_REMOVAL / TDR.
+            mTextures.push_back(std::move(tex));
+            return true;
+        };
+
+    // 1. Альбедо (слот tessBase + 0)
+    LoadTessTexture(L"Models/Well/textures/Well_01_Albedo.dds", tessBase + 0);
+
+    // 2. Нормаль (слот tessBase + 1)
+    LoadTessTexture(L"Models/Well/textures/Well_01_Normal.dds", tessBase + 1);
+
+    // 3. Displacement (слот tessBase + 2)
+    LoadTessTexture(L"Models/Well/textures/Well_01_Height.dds", tessBase + 2);
+    mDisplacementTexIndex = tessBase + 2;
+
+    // ============================================
+    // ЗАГРУЖАЕМ ОСТАЛЬНЫЕ ТЕКСТУРЫ ПО ПОРЯДКУ
+    // ============================================
+    int currentSlot = tessBase + 3;
     std::unordered_map<std::string, bool> loaded;
 
     for (auto& submesh : mSubMeshInfos)
@@ -587,17 +684,19 @@ void App::LoadAllTextures()
         if (loaded.count(submesh.materialName)) continue;
         loaded[submesh.materialName] = true;
 
+        auto it = materialTextureMap.find(submesh.materialName);
+        if (it == materialTextureMap.end()) continue;
+
         auto texture = std::make_unique<MeshTexture>();
-        HRESULT hr = CreateDDSTextureFromFile12(
+        HRESULT hr2 = CreateDDSTextureFromFile12(
             md3dDevice.Get(), mCommandList.Get(),
             submesh.texturePath.c_str(),
             texture->Resource, texture->UploadHeap);
 
-        if (FAILED(hr))
+        if (FAILED(hr2))
         {
             OutputDebugStringA(("Failed to load: " +
                 std::string(submesh.texturePath.begin(), submesh.texturePath.end()) + "\n").c_str());
-            submesh.textureIndex = -1;
             continue;
         }
 
@@ -606,14 +705,28 @@ void App::LoadAllTextures()
         srvDesc.Format = texture->Resource->GetDesc().Format;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MostDetailedMip = 0;
-        srvDesc.Texture2D.MipLevels = -1; // все mip-уровни
+        srvDesc.Texture2D.MipLevels = -1;
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
             mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
-            kTextureSrvBase + submesh.textureIndex,
+            currentSlot,
             descriptorSize);
 
         md3dDevice->CreateShaderResourceView(texture->Resource.Get(), &srvDesc, hDescriptor);
         mTextures.push_back(std::move(texture));
+
+        int relativeSlot = currentSlot - kTextureSrvBase;
+
+        for (auto& sm : mSubMeshInfos)
+        {
+            if (sm.materialName == submesh.materialName)
+            {
+                sm.textureIndex = relativeSlot;
+            }
+        }
+
+        currentSlot++;
     }
+
+    mUniqueTextureCount = currentSlot - kTextureSrvBase;
 }
