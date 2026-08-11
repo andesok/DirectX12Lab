@@ -384,52 +384,29 @@ void RenderingSystem::BuildTessellationPSO()
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+        { "TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXINDEX", 0, DXGI_FORMAT_R32_UINT, 0, 44, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
     };
     psoDesc.InputLayout = { inputLayout.data(), (UINT)inputLayout.size() };
 
-    // ============================================
-    // 4. ПРИМИТИВЫ — ВАЖНО: PATCH!
-    // ============================================
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_PATCH;
 
-    // ============================================
-    // 5. RASTERIZER STATE
-    // ============================================
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
     psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
 
-    // ============================================
-    // 6. BLEND STATE
-    // ============================================
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-
-    // ============================================
-    // 7. DEPTH STENCIL STATE
-    // ============================================
     psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
     psoDesc.DepthStencilState.DepthEnable = TRUE;
     psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-    // ============================================
-    // 8. SAMPLE MASK
-    // ============================================
     psoDesc.SampleMask = UINT_MAX;
-
-    // ============================================
-    // 9. RENDER TARGET
-    // ============================================
     psoDesc.NumRenderTargets = 3;
     psoDesc.RTVFormats[0] = mFormats[0];
     psoDesc.RTVFormats[1] = mFormats[1];
     psoDesc.RTVFormats[2] = mFormats[2];
     psoDesc.DSVFormat = mDepthStencilFormat;
-
-    // ============================================
-    // 10. MULTISAMPLING
-    // ============================================
     psoDesc.SampleDesc.Count = 1;
     psoDesc.SampleDesc.Quality = 0;
 

@@ -4,6 +4,7 @@ struct VSOutput
     float3 Normal : NORMAL;
     float2 TexCoord : TEXCOORD;
     float3 Tangent : TANGENT;
+    uint TexIndex : TEXINDEX;
 };
 
 struct HSOutput
@@ -12,9 +13,9 @@ struct HSOutput
     float3 Normal : NORMAL;
     float2 TexCoord : TEXCOORD;
     float3 Tangent : TANGENT;
+    uint TexIndex : TEXINDEX;
 };
 
-// Для triangle domain: 3 edge-фактора + 1 inside-фактор
 struct PatchTess
 {
     float EdgeTess[3] : SV_TessFactor;
@@ -71,5 +72,6 @@ HSOutput main(
     output.Normal = patch[i].Normal;
     output.TexCoord = patch[i].TexCoord;
     output.Tangent = patch[i].Tangent;
+    output.TexIndex = patch[i].TexIndex;
     return output;
 }

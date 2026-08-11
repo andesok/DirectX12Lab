@@ -41,13 +41,19 @@ struct TessellationConstants
     float pad1 = 0.0f;
 };
 
+struct SubMeshTextures
+{
+    std::wstring albedoPath;
+    std::wstring normalPath;
+    std::wstring heightPath;
+    int arrayIndex = -1;  // Индекс в Texture2DArray для альбедо
+};
 struct SubMeshInfo {
     std::string name;
     UINT indexCount;
     UINT startIndex;
     std::string materialName;
-    std::wstring texturePath;
-    UINT srvIndex;
+    SubMeshTextures textures;
     int textureIndex;
 };
 
@@ -56,6 +62,8 @@ struct Vertex
     XMFLOAT3 Pos;
     XMFLOAT3 Normal;
     XMFLOAT2 TexCoord;
+    XMFLOAT3 Tangent;
+    UINT TexIndex;
 };
 
 struct ObjectConstants
@@ -86,12 +94,11 @@ private:
     void BuildDescriptorHeaps();
     void BuildConstantBuffers();
     void LoadAllTextures();
-    void LoadDisplacementTexture();
-
-    void LoadTextureForMaterial(const SubMeshInfo& submesh, int srvIndex);
     void BuildSampler();
 
     void BuildModelGeometry(std::string modelPath, std::string baseDir);
+    void LoadTextureToArray(const std::wstring& path, UINT arrayIndex);
+    void CreateTextureArraySRV();
 
 private:
     std::unique_ptr<Camera> mCamera;
@@ -125,8 +132,6 @@ private:
     std::unique_ptr<RenderingSystem> mRenderSystem;
     std::unique_ptr<GBuffer> mGBuffer;
     
-
-
     std::vector<Light> mLights;
 
     Light* mMainLight = nullptr;
@@ -139,6 +144,18 @@ private:
 
     DirectX::XMFLOAT4 mAmbientLight = { 0.3f, 0.3f, 0.3f, 1.0f };
 
-    std::vector<std::unique_ptr<MeshTexture>> mTextures;
-    std::unordered_map<std::string, UINT> mTextureIndexMap;
+    std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> mTextureUploadKeepAlive;
+    // ============================================
+    // TEXTURE2DARRAY РЕСУРСЫ
+    // ============================================
+    UINT mTextureCount = 0;                        // Количество текстур в массиве
+    UINT mTextureWidth = 0;                       // Ширина текстур (все одинаковые)
+    UINT mTextureHeight = 0;                      // Высота текстур (все одинаковые)
+    DXGI_FORMAT mTextureFormat = DXGI_FORMAT_UNKNOWN;
+
+    // Временные ресурсы для загрузки
+    std::vector<SubMeshTextures> mSubMeshTextures;
+    ComPtr<ID3D12Resource> mAlbedoArray;
+    ComPtr<ID3D12Resource> mNormalArray;
+    ComPtr<ID3D12Resource> mHeightArray;
 };

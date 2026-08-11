@@ -4,6 +4,7 @@ struct VSInput
     float3 Normal : NORMAL;
     float2 TexCoord : TEXCOORD;
     float3 Tangent : TANGENT;
+    uint TexIndex : TEXINDEX;
 };
 
 struct VSOutput
@@ -12,6 +13,7 @@ struct VSOutput
     float3 Normal : NORMAL;
     float2 TexCoord : TEXCOORD;
     float3 Tangent : TANGENT;
+    uint TexIndex : TEXINDEX;
 };
 
 VSOutput main(VSInput input)
@@ -21,5 +23,6 @@ VSOutput main(VSInput input)
     output.Normal = input.Normal;
     output.TexCoord = input.TexCoord;
     output.Tangent = input.Tangent;
+    output.TexIndex = input.TexIndex;
     return output;
 }
