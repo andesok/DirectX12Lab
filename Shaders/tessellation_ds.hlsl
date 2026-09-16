@@ -23,8 +23,8 @@ struct DSOutput
     uint TexIndex : TEXINDEX;
 };
 
-Texture2D gDiffuseMap : register(t0);
-Texture2D gNormalMap : register(t1);
+Texture2DArray gDiffuseMaps : register(t0);
+Texture2DArray gNormalMaps : register(t1);
 Texture2DArray gHeightMaps : register(t2);
 SamplerState gSampler : register(s0);
 
@@ -71,7 +71,7 @@ DSOutput main(
 
     float4 worldPos = mul(float4(position, 1.0f), gWorld);
     output.PositionW = worldPos.xyz;
-    output.PositionH = mul(worldPos, gWorldViewProj);
+    output.PositionH = mul(float4(position, 1.0f), gWorldViewProj);
 
     output.NormalW = normalize(mul(normal, (float3x3) gWorldInvTranspose));
     output.TangentW = normalize(mul(tangent, (float3x3) gWorld));

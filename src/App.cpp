@@ -53,8 +53,8 @@ bool App::Initialize()
     // 1. Направленный свет
     Light dirLight;
     dirLight.Type = LIGHT_TYPE_DIRECTIONAL;
-    dirLight.Strength = { 1.0f, 1.0f, 1.0f };
-    dirLight.Direction = { 1.0f, 1.0f, 1.0f };
+    dirLight.Strength = { 2.0f, 2.0f, 2.0f };
+    dirLight.Direction = { 2.0f, -1.0f, 0.0f };
     mLights.push_back(dirLight);
     mMainLight = &mLights.back();
 
@@ -257,8 +257,8 @@ void App::Draw(const GameTimer& gt)
             pow(eyePos.y - wellCenter.y, 2) +
             pow(eyePos.z - wellCenter.z, 2));
 
-        float minTess = 4.0f;
-        float maxTess = 32.0f;
+        float minTess = 0.0f;
+        float maxTess = 64.0f;
         float minDist = 10.0f;
         float maxDist = 500.0f;
 
@@ -278,7 +278,7 @@ void App::Draw(const GameTimer& gt)
         XMStoreFloat4x4(&tessConstants.WorldInvTranspose, XMMatrixTranspose(worldInvTranspose));
         tessConstants.EyePosW = mCamera->GetPosition3f();
         tessConstants.TessellationFactor = tessFactor;
-        tessConstants.DisplacementScale = 2.0f;
+        tessConstants.DisplacementScale = 5.0f;
 
         mTessCB->CopyData(0, tessConstants);
 
@@ -850,59 +850,40 @@ void App::LoadAllTextures()
     // ============================================
     OutputDebugStringA("Creating texture arrays...\n");
 
-    auto CreateTextureArray = [&](const std::wstring& name) -> ComPtr<ID3D12Resource>
+    auto CreateTextureArray = [&](DXGI_FORMAT format) -> ComPtr<ID3D12Resource>
         {
-            OutputDebugStringA(("Creating array: " + std::string(name.begin(), name.end()) + "\n").c_str());
-
             D3D12_RESOURCE_DESC desc = {};
             desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            desc.Alignment = 0;
             desc.Width = mTextureWidth;
             desc.Height = mTextureHeight;
             desc.DepthOrArraySize = textureCount;
             desc.MipLevels = 1;
-            desc.Format = mTextureFormat;
+            desc.Format = format;
             desc.SampleDesc.Count = 1;
-            desc.SampleDesc.Quality = 0;
             desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-            desc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
             CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
             ComPtr<ID3D12Resource> resource;
-            HRESULT hr3 = md3dDevice->CreateCommittedResource(
+
+            ThrowIfFailed(md3dDevice->CreateCommittedResource(
                 &heapProps,
                 D3D12_HEAP_FLAG_NONE,
                 &desc,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
-                IID_PPV_ARGS(&resource));
-
-            if (FAILED(hr3))
-            {
-                OutputDebugStringA(("Failed to create texture array! HRESULT: 0x" + std::to_string(hr3) + "\n").c_str());
-            }
-            else
-            {
-                OutputDebugStringA("Texture array created successfully!\n");
-            }
+                IID_PPV_ARGS(&resource)));
 
             return resource;
         };
 
-    // Создаем три массива
-    OutputDebugStringA("Creating albedo array...\n");
-    ComPtr<ID3D12Resource> albedoArray = CreateTextureArray(L"AlbedoArray");
+    ComPtr<ID3D12Resource> albedoArray =
+        CreateTextureArray(DXGI_FORMAT_R8G8B8A8_UNORM);
 
-    OutputDebugStringA("Creating normal array...\n");
-    ComPtr<ID3D12Resource> normalArray = CreateTextureArray(L"NormalArray");
+    ComPtr<ID3D12Resource> normalArray =
+        CreateTextureArray(DXGI_FORMAT_R8G8B8A8_UNORM);
 
-    OutputDebugStringA("Creating height array...\n");
-    ComPtr<ID3D12Resource> heightArray = CreateTextureArray(L"HeightArray");
-
-    // ============================================
-    // 5. ЗАГРУЖАЕМ ВСЕ ТЕКСТУРЫ В МАССИВЫ
-    // ============================================
-    OutputDebugStringA("Loading textures to arrays...\n");
+    ComPtr<ID3D12Resource> heightArray =
+        CreateTextureArray(DXGI_FORMAT_R8_UNORM);
 
     auto LoadTexturesToArray = [&](const std::vector<SubMeshTextures>& texInfos,
         ComPtr<ID3D12Resource>& targetArray, auto getPath)
@@ -1016,7 +997,7 @@ void App::LoadAllTextures()
         {
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
             srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = mTextureFormat;
+            srvDesc.Format = resource->GetDesc().Format;
             srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
             srvDesc.Texture2DArray.MostDetailedMip = 0;
             srvDesc.Texture2DArray.MipLevels = 1;

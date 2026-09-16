@@ -39,7 +39,7 @@ PSOutput main(PSInput input)
     float3 finalNormal = normalize(mul(normalMap, TBN));
 
     output.Albedo = albedo;
-    output.Normal = float4(finalNormal, 0.0f);
+    output.Normal = float4(finalNormal * 0.5f + 0.5f, 0.0f);
     output.Position = float4(input.PositionW, 1.0f);
 
     return output;

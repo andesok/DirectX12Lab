@@ -22,7 +22,7 @@ PSOutput main(PSInput input)
 
     float4 texColor = gDiffuseMap.Sample(gSampler, input.TexCoord);
     output.Albedo = float4(texColor.rgb, 1.0f);
-    output.Normal = float4(normalize(input.NormalW), 0.0f);
+    output.Normal = float4(normalize(input.NormalW) * 0.5f + 0.5f, 0.0f);
     output.Position = float4(input.PosW, 1.0f);
 
     return output;

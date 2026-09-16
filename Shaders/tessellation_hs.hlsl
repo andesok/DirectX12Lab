@@ -45,8 +45,7 @@ PatchTess ConstantHS(InputPatch<VSOutput, 3> patch, uint patchID : SV_PrimitiveI
     float maxTess = 64.0f;
     float minTess = 1.0f;
 
-    float tess = maxTess - (maxTess - minTess) * saturate((dist - minDist) / (maxDist - minDist));
-    tess = clamp(round(tess), minTess, maxTess);
+    float tess = clamp(round(gTessellationFactor), 1.0f, 64.0f);
 
     output.EdgeTess[0] = tess;
     output.EdgeTess[1] = tess;
