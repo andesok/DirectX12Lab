@@ -1,36 +1,5 @@
 ﻿  App.cpp
-D:\Projects_C++\DirectX12Lab\src\App.cpp(255,24): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
-D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18): warning C4244: '=': conversion from 'wchar_t' to 'char', possible loss of data
-  (compiling source file 'src/App.cpp')
-      D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xutility(5094,18):
-      the template instantiation context (the oldest one first) is
-          D:\Projects_C++\DirectX12Lab\src\App.cpp(771,25):
-          see reference to function template instantiation 'std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string<std::_String_iterator<std::_String_val<std::_Simple_types<_Elem>>>,0>(_Iter,_Iter,const _Alloc &)' being compiled
-          with
-          [
-              _Elem=wchar_t,
-              _Iter=std::_String_iterator<std::_String_val<std::_Simple_types<wchar_t>>>,
-              _Alloc=std::allocator<char>
-          ]
-              D:\Projects_C++\DirectX12Lab\src\App.cpp(915,39):
-              see the first reference to 'std::basic_string<char,std::char_traits<char>,std::allocator<char>>::basic_string' in 'App::LoadAllTextures::<lambda_dae9dc38ff26a592a157ec4c56d98101>::operator ()'
-          D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(862,17):
-          see reference to function template instantiation 'void std::basic_string<char,std::char_traits<char>,std::allocator<char>>::_Construct_from_iter<wchar_t*,wchar_t*,_Size_type>(_Iter,const _Sent,_Size)' being compiled
-          with
-          [
-              _Size_type=std::+::_Size_type,
-              _Iter=wchar_t *,
-              _Sent=wchar_t *,
-              _Size=std::+::_Size_type
-          ]
-          D:\Programs\Visual Studio\2026\VC\Tools\MSVC\14.51.36231\include\xstring(1018,18):
-          see reference to function template instantiation '_OutIt *std::_Copy_n_unchecked4<wchar_t*,_Size,char*>(_InIt,_SizeTy,_OutIt)' being compiled
-          with
-          [
-              _OutIt=char *,
-              _Size=std::+::_Size_type,
-              _InIt=wchar_t *,
-              _SizeTy=std::+::_Size_type
-          ]
-  
-  DirectX12Lab.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe
+E:\Git Projects\DirectX12Lab\src\App.cpp(268,24): warning C4244: инициализация: преобразование "double" в "float", возможна потеря данных
+  Main.cpp
+  Создание кода...
+  DirectX12Lab.vcxproj -> E:\Git Projects\DirectX12Lab\x64\Debug\DirectX12Lab.exe

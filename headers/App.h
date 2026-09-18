@@ -97,8 +97,10 @@ private:
     void BuildSampler();
 
     void BuildModelGeometry(std::string modelPath, std::string baseDir);
+    void BuildModelGeometryLegacy(std::string modelPath, std::string baseDir);
     void LoadTextureToArray(const std::wstring& path, UINT arrayIndex);
     void CreateTextureArraySRV();
+    void LoadAllTexturesLegacy();
 
 private:
     std::unique_ptr<Camera> mCamera;
@@ -124,6 +126,9 @@ private:
     float mTheta = 1.5f * XM_PI;
     float mPhi = XM_PIDIV4;
     float mRadius = 5.0f;
+    XMFLOAT3 mSceneCenter = { 0.0f, 0.0f, 0.0f };
+    float mSceneRadius = 5.0f;
+    bool mEnableTessellation = false;
     int mUniqueTextureCount = 0;
 
     POINT mLastMousePos;
@@ -145,6 +150,7 @@ private:
     DirectX::XMFLOAT4 mAmbientLight = { 0.3f, 0.3f, 0.3f, 1.0f };
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> mTextureUploadKeepAlive;
+    std::vector<MeshTexture> mTextures;
     // ============================================
     // TEXTURE2DARRAY РЕСУРСЫ
     // ============================================

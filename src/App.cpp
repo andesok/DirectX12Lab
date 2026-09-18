@@ -1,5 +1,9 @@
 #include "../headers/App.h"
 
+#include <filesystem>
+#include <cfloat>
+#include <stdexcept>
+
 App::App(HINSTANCE hInstance)
     : D3DApp(hInstance)
 {}
@@ -35,7 +39,7 @@ bool App::Initialize()
 		
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
-    BuildModelGeometry("Models/Well/well.obj", "Models/Well/");
+    BuildModelGeometry("Models/Sponza/sponza.obj", "Models/Sponza/");
 
     BuildDescriptorHeaps();
     BuildConstantBuffers();
@@ -116,10 +120,18 @@ bool App::Initialize()
 
     mCamera = std::make_unique<Camera>();
 
-    float x = mRadius * sinf(mPhi) * cosf(mTheta);
-    float z = mRadius * sinf(mPhi) * sinf(mTheta);
-    float y = mRadius * cosf(mPhi);
+    mRadius = mSceneRadius * 2.0f;
+    if (mRadius < 5.0f)
+    {
+        mRadius = 5.0f;
+    }
+    const float x = mSceneCenter.x + mRadius * sinf(mPhi) * cosf(mTheta);
+    const float z = mSceneCenter.z + mRadius * sinf(mPhi) * sinf(mTheta);
+    const float y = mSceneCenter.y + mRadius * cosf(mPhi);
     mCamera->SetPosition(x, y, z);
+    const XMFLOAT3 cameraPosition = mCamera->GetPosition3f();
+    mCamera->LookAt(XMLoadFloat3(&cameraPosition), XMLoadFloat3(&mSceneCenter),
+        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
     mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
 
     // Execute the initialization commands.
@@ -226,18 +238,19 @@ void App::Draw(const GameTimer& gt)
     UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // ============================================
-    // 1. ОБЫЧНЫЙ РЕНДЕРИНГ (ВСЁ, КРОМЕ КОЛОДЦА)
-    // ============================================
+    // Each submesh owns a material SRV, so models may freely mix texture sizes.
     for (const auto& submeshInfo : mSubMeshInfos)
     {
-        if (submeshInfo.name.find("Well") != std::string::npos) continue;
+        if (mEnableTessellation && submeshInfo.name.find("Well") != std::string::npos)
+        {
+            continue;
+        }
 
         RenderItem item;
         item.Mesh = mGeo.get();
         item.SubmeshName = submeshInfo.name;
         item.CBIndex = 0;
-        item.SRVIndex = kTextureSrvBase;
+        item.SRVIndex = kTextureSrvBase + submeshInfo.textureIndex;
 
         mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(),
             mSamplerHeap.Get(), true);
@@ -246,7 +259,7 @@ void App::Draw(const GameTimer& gt)
     // ============================================
     // 2. ТЕССЕЛЯЦИЯ КОЛОДЦА
     // ============================================
-    if (mRenderSystem->GetTessellationPSO() && mTessCB)
+    if (mEnableTessellation && mRenderSystem->GetTessellationPSO() && mTessCB)
     {
         // Вычисляем адаптивный фактор тесселяции
         XMFLOAT3 wellCenter = { 0.0f, 0.0f, 0.0f };
@@ -385,12 +398,8 @@ void App::OnMouseMove(WPARAM btnState, int x, int y)
 
 void App::BuildDescriptorHeaps()
 {
-    // Слот 0: CBV
-    // Слот 1: SRV текстура-заглушка (опционально)
-    // Слот 2..2+N: G-Buffer SRV (3 штуки)
-    // Слот 5..5+mUniqueTextureCount: текстуры мешей
-
-    UINT totalDescriptors = 8;
+    const UINT textureDescriptorCount = mUniqueTextureCount > 0 ? mUniqueTextureCount : 1;
+    const UINT totalDescriptors = kTextureSrvBase + textureDescriptorCount;
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
     cbvHeapDesc.NumDescriptors = totalDescriptors;
@@ -426,6 +435,189 @@ void App::BuildConstantBuffers()
 }
 
 void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
+{
+    tinyobj::attrib_t attrib;
+    std::vector<tinyobj::shape_t> shapes;
+    std::vector<tinyobj::material_t> materials;
+    std::string warning;
+    std::string error;
+
+    if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warning, &error,
+        modelPath.c_str(), baseDir.c_str(), true))
+    {
+        throw std::runtime_error("Unable to load OBJ '" + modelPath + "': " + error);
+    }
+
+    if (!warning.empty())
+    {
+        OutputDebugStringA(warning.c_str());
+    }
+
+    XMFLOAT3 minimum = { FLT_MAX, FLT_MAX, FLT_MAX };
+    XMFLOAT3 maximum = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    const auto minimumOf = [](float left, float right) { return left < right ? left : right; };
+    const auto maximumOf = [](float left, float right) { return left > right ? left : right; };
+    for (size_t index = 0; index < attrib.vertices.size(); index += 3)
+    {
+        minimum.x = minimumOf(minimum.x, attrib.vertices[index]);
+        minimum.y = minimumOf(minimum.y, attrib.vertices[index + 1]);
+        minimum.z = minimumOf(minimum.z, attrib.vertices[index + 2]);
+        maximum.x = maximumOf(maximum.x, attrib.vertices[index]);
+        maximum.y = maximumOf(maximum.y, attrib.vertices[index + 1]);
+        maximum.z = maximumOf(maximum.z, attrib.vertices[index + 2]);
+    }
+    mSceneCenter = {
+        (minimum.x + maximum.x) * 0.5f,
+        (minimum.y + maximum.y) * 0.5f,
+        (minimum.z + maximum.z) * 0.5f };
+    mSceneRadius = XMVectorGetX(XMVector3Length(XMLoadFloat3(&maximum) - XMLoadFloat3(&mSceneCenter)));
+
+    auto texturePathFor = [&baseDir](const std::string& sourcePath)
+    {
+        if (sourcePath.empty())
+        {
+            return std::wstring();
+        }
+
+        std::filesystem::path path = std::filesystem::path(baseDir) / sourcePath;
+        path.replace_extension(".dds");
+        return path.wstring();
+    };
+
+    std::unordered_map<std::wstring, int> textureIndices;
+    mSubMeshTextures.clear();
+    std::vector<int> materialTextureIndices(materials.size(), 0);
+
+    for (size_t materialIndex = 0; materialIndex < materials.size(); ++materialIndex)
+    {
+        const std::wstring texturePath = texturePathFor(materials[materialIndex].diffuse_texname);
+        if (texturePath.empty())
+        {
+            continue;
+        }
+
+        const auto [iterator, inserted] = textureIndices.emplace(
+            texturePath, static_cast<int>(mSubMeshTextures.size()));
+        if (inserted)
+        {
+            SubMeshTextures textures;
+            textures.albedoPath = texturePath;
+            textures.arrayIndex = iterator->second;
+            mSubMeshTextures.push_back(std::move(textures));
+        }
+        materialTextureIndices[materialIndex] = iterator->second;
+    }
+
+    if (mSubMeshTextures.empty())
+    {
+        throw std::runtime_error("OBJ does not contain a diffuse texture that can be loaded as DDS.");
+    }
+
+    mGeo = std::make_unique<MeshGeometry>();
+    mGeo->Name = "Model";
+    mSubMeshInfos.clear();
+
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+
+    auto appendSubmesh = [&](const std::string& name, int materialId,
+        const std::vector<tinyobj::index_t>& faceIndices)
+    {
+        if (faceIndices.empty())
+        {
+            return;
+        }
+
+        const UINT startVertex = static_cast<UINT>(vertices.size());
+        const UINT startIndex = static_cast<UINT>(indices.size());
+        const int textureIndex = materialId >= 0 && materialId < static_cast<int>(materialTextureIndices.size())
+            ? materialTextureIndices[materialId] : 0;
+
+        for (const tinyobj::index_t& index : faceIndices)
+        {
+            Vertex vertex = {};
+            if (index.vertex_index >= 0)
+            {
+                vertex.Pos = {
+                    attrib.vertices[3 * index.vertex_index],
+                    attrib.vertices[3 * index.vertex_index + 1],
+                    attrib.vertices[3 * index.vertex_index + 2] };
+            }
+            if (index.normal_index >= 0)
+            {
+                vertex.Normal = {
+                    attrib.normals[3 * index.normal_index],
+                    attrib.normals[3 * index.normal_index + 1],
+                    attrib.normals[3 * index.normal_index + 2] };
+            }
+            else
+            {
+                vertex.Normal = { 0.0f, 1.0f, 0.0f };
+            }
+            if (index.texcoord_index >= 0)
+            {
+                vertex.TexCoord = {
+                    attrib.texcoords[2 * index.texcoord_index],
+                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1] };
+            }
+            vertex.Tangent = { 1.0f, 0.0f, 0.0f };
+            vertex.TexIndex = static_cast<UINT>(textureIndex);
+            vertices.push_back(vertex);
+            indices.push_back(static_cast<UINT>(vertices.size() - 1));
+        }
+
+        const std::string uniqueName = name + "_" + std::to_string(mSubMeshInfos.size());
+        mGeo->DrawArgs[uniqueName] = { static_cast<UINT>(faceIndices.size()), startIndex, 0 };
+
+        SubMeshInfo info = {};
+        info.name = uniqueName;
+        info.indexCount = static_cast<UINT>(faceIndices.size());
+        info.startIndex = startIndex;
+        info.materialName = materialId >= 0 && materialId < static_cast<int>(materials.size())
+            ? materials[materialId].name : "default";
+        info.textureIndex = textureIndex;
+        mSubMeshInfos.push_back(std::move(info));
+    };
+
+    for (size_t shapeIndex = 0; shapeIndex < shapes.size(); ++shapeIndex)
+    {
+        const tinyobj::mesh_t& mesh = shapes[shapeIndex].mesh;
+        std::unordered_map<int, std::vector<tinyobj::index_t>> facesByMaterial;
+        size_t indexOffset = 0;
+        for (size_t faceIndex = 0; faceIndex < mesh.num_face_vertices.size(); ++faceIndex)
+        {
+            const int materialId = mesh.material_ids[faceIndex];
+            const unsigned char faceVertexCount = mesh.num_face_vertices[faceIndex];
+            auto& destination = facesByMaterial[materialId];
+            for (unsigned char vertexIndex = 0; vertexIndex < faceVertexCount; ++vertexIndex)
+            {
+                destination.push_back(mesh.indices[indexOffset + vertexIndex]);
+            }
+            indexOffset += faceVertexCount;
+        }
+
+        const std::string baseName = shapes[shapeIndex].name.empty()
+            ? "submesh" : shapes[shapeIndex].name;
+        for (const auto& [materialId, faceIndices] : facesByMaterial)
+        {
+            appendSubmesh(baseName, materialId, faceIndices);
+        }
+    }
+
+    const UINT vertexByteSize = static_cast<UINT>(vertices.size() * sizeof(Vertex));
+    const UINT indexByteSize = static_cast<UINT>(indices.size() * sizeof(std::uint32_t));
+    mGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(),
+        vertices.data(), vertexByteSize, mGeo->VertexBufferUploader);
+    mGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(),
+        indices.data(), indexByteSize, mGeo->IndexBufferUploader);
+    mGeo->VertexByteStride = sizeof(Vertex);
+    mGeo->VertexBufferByteSize = vertexByteSize;
+    mGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
+    mGeo->IndexBufferByteSize = indexByteSize;
+    mUniqueTextureCount = static_cast<UINT>(mSubMeshTextures.size());
+}
+
+void App::BuildModelGeometryLegacy(std::string modelPath, std::string baseDir)
 {
     tinyobj::attrib_t attrib;
     std::vector<tinyobj::shape_t> shapes;
@@ -749,317 +941,36 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
 
 void App::LoadAllTextures()
 {
-    OutputDebugStringA("=== LoadAllTextures START ===\n");
-    OutputDebugStringA(("mSubMeshTextures.size() = " + std::to_string(mSubMeshTextures.size()) + "\n").c_str());
+    mTextures.clear();
+    mTextures.reserve(mSubMeshTextures.size());
 
-    if (mSubMeshTextures.empty())
-    {
-        OutputDebugStringA("No textures found!\n");
-        return;
-    }
-
-    // ============================================
-    // 1. ОПРЕДЕЛЯЕМ КОЛИЧЕСТВО ТЕКСТУР
-    // ============================================
-    UINT textureCount = (UINT)mSubMeshTextures.size();
-    mTextureCount = textureCount;
-    OutputDebugStringA(("textureCount = " + std::to_string(textureCount) + "\n").c_str());
-
-    // Выводим все пути
-    for (UINT i = 0; i < textureCount; i++)
-    {
-        std::string path(mSubMeshTextures[i].albedoPath.begin(), mSubMeshTextures[i].albedoPath.end());
-        OutputDebugStringA(("Texture " + std::to_string(i) + " albedo: " + path + "\n").c_str());
-    }
-
-    // ============================================
-    // 2. ЗАГРУЖАЕМ ПЕРВУЮ ТЕКСТУРУ ДЛЯ ОПРЕДЕЛЕНИЯ ФОРМАТА
-    // ============================================
-    OutputDebugStringA("Loading first texture...\n");
-
-    auto tempTex = std::make_unique<MeshTexture>();
-    std::string firstPath(mSubMeshTextures[0].albedoPath.begin(), mSubMeshTextures[0].albedoPath.end());
-    OutputDebugStringA(("Loading first texture: " + firstPath + "\n").c_str());
-
-    HRESULT hr = CreateDDSTextureFromFile12(
-        md3dDevice.Get(),
-        mCommandList.Get(),
-        mSubMeshTextures[0].albedoPath.c_str(),
-        tempTex->Resource,
-        tempTex->UploadHeap);
-
-    if (FAILED(hr))
-    {
-        OutputDebugStringA(("Failed to load first texture! HRESULT: 0x" + std::to_string(hr) + "\n").c_str());
-        return;
-    }
-
-    OutputDebugStringA("First texture loaded successfully!\n");
-
-    D3D12_RESOURCE_DESC firstDesc = tempTex->Resource->GetDesc();
-    mTextureWidth = (UINT)firstDesc.Width;
-    mTextureHeight = firstDesc.Height;
-    mTextureFormat = firstDesc.Format;
-
-    OutputDebugStringA(("Texture size: " + std::to_string(mTextureWidth) + "x" + std::to_string(mTextureHeight) + "\n").c_str());
-    OutputDebugStringA(("Texture format: " + std::to_string(mTextureFormat) + "\n").c_str());
-
-    tempTex->Resource.Reset();
-    tempTex->UploadHeap.Reset();
-
-    // ============================================
-    // 3. ПРОВЕРЯЕМ РАЗМЕРЫ ВСЕХ ТЕКСТУР
-    // ============================================
-    OutputDebugStringA("Checking texture sizes...\n");
-
-    for (UINT i = 0; i < textureCount; i++)
-    {
-        OutputDebugStringA(("Checking texture " + std::to_string(i) + "...\n").c_str());
-
-        auto checkTex = std::make_unique<MeshTexture>();
-        HRESULT hr2 = CreateDDSTextureFromFile12(
-            md3dDevice.Get(),
-            mCommandList.Get(),
-            mSubMeshTextures[i].albedoPath.c_str(),
-            checkTex->Resource,
-            checkTex->UploadHeap);
-
-        if (SUCCEEDED(hr2))
-        {
-            D3D12_RESOURCE_DESC desc = checkTex->Resource->GetDesc();
-            OutputDebugStringA(("Texture " + std::to_string(i) + " size: " +
-                std::to_string(desc.Width) + "x" + std::to_string(desc.Height) + "\n").c_str());
-
-            if (desc.Width != mTextureWidth || desc.Height != mTextureHeight)
-            {
-                OutputDebugStringA(("WARNING: Texture " + std::to_string(i) +
-                    " has different size! All textures must be same size for Texture2DArray.\n").c_str());
-            }
-        }
-        else
-        {
-            OutputDebugStringA(("Failed to load texture " + std::to_string(i) + " for size check\n").c_str());
-        }
-
-        checkTex->Resource.Reset();
-        checkTex->UploadHeap.Reset();
-    }
-
-    // ============================================
-    // 4. СОЗДАЕМ ТРИ TEXTURE2DARRAY
-    // ============================================
-    OutputDebugStringA("Creating texture arrays...\n");
-
-    auto CreateTextureArray = [&](DXGI_FORMAT format) -> ComPtr<ID3D12Resource>
-        {
-            D3D12_RESOURCE_DESC desc = {};
-            desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-            desc.Width = mTextureWidth;
-            desc.Height = mTextureHeight;
-            desc.DepthOrArraySize = textureCount;
-            desc.MipLevels = 1;
-            desc.Format = format;
-            desc.SampleDesc.Count = 1;
-            desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-
-            CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_DEFAULT);
-            ComPtr<ID3D12Resource> resource;
-
-            ThrowIfFailed(md3dDevice->CreateCommittedResource(
-                &heapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &desc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(&resource)));
-
-            return resource;
-        };
-
-    ComPtr<ID3D12Resource> albedoArray =
-        CreateTextureArray(DXGI_FORMAT_R8G8B8A8_UNORM);
-
-    ComPtr<ID3D12Resource> normalArray =
-        CreateTextureArray(DXGI_FORMAT_R8G8B8A8_UNORM);
-
-    ComPtr<ID3D12Resource> heightArray =
-        CreateTextureArray(DXGI_FORMAT_R8_UNORM);
-
-    auto LoadTexturesToArray = [&](const std::vector<SubMeshTextures>& texInfos,
-        ComPtr<ID3D12Resource>& targetArray, auto getPath)
-        {
-            std::vector<D3D12_SUBRESOURCE_DATA> subresources(textureCount);
-            std::vector<ComPtr<ID3D12Resource>> tempResources(textureCount);
-            std::vector<ComPtr<ID3D12Resource>> tempUploads(textureCount);
-
-            for (UINT i = 0; i < textureCount; i++)
-            {
-                ComPtr<ID3D12Resource> tempResource;
-                ComPtr<ID3D12Resource> uploadHeap;
-
-                std::wstring path = getPath(texInfos[i]);
-                if (path.empty())
-                {
-                    path = texInfos[0].albedoPath;
-                }
-
-                HRESULT hr2 = CreateDDSTextureFromFile12(
-                    md3dDevice.Get(),
-                    mCommandList.Get(),
-                    path.c_str(),
-                    tempResource,
-                    uploadHeap);
-
-                if (FAILED(hr2))
-                {
-                    OutputDebugStringA(("Failed to load: " +
-                        std::string(path.begin(), path.end()) + "\n").c_str());
-                    continue;
-                }
-
-                tempResources[i] = tempResource;
-                tempUploads[i] = uploadHeap;
-
-                D3D12_RESOURCE_DESC desc = tempResource->GetDesc();
-                D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
-                UINT numRows;
-                UINT64 rowSizeInBytes;
-                UINT64 totalBytes;
-                md3dDevice->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
-
-                subresources[i].pData = nullptr;
-                subresources[i].RowPitch = (LONG_PTR)rowSizeInBytes;
-                subresources[i].SlicePitch = (LONG_PTR)totalBytes;
-
-                D3D12_RANGE readRange = { 0, 0 };
-                BYTE* pData;
-                uploadHeap->Map(0, &readRange, reinterpret_cast<void**>(&pData));
-                subresources[i].pData = pData;
-            }
-
-            UINT64 uploadSize = GetRequiredIntermediateSize(targetArray.Get(), 0, textureCount);
-            CD3DX12_HEAP_PROPERTIES uploadHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-            CD3DX12_RESOURCE_DESC uploadBufferDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-
-            ComPtr<ID3D12Resource> uploadBuffer;
-            ThrowIfFailed(md3dDevice->CreateCommittedResource(
-                &uploadHeapProps,
-                D3D12_HEAP_FLAG_NONE,
-                &uploadBufferDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&uploadBuffer)));
-
-            UpdateSubresources(mCommandList.Get(), targetArray.Get(), uploadBuffer.Get(),
-                0, 0, textureCount, subresources.data());
-
-            auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                targetArray.Get(),
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            mCommandList->ResourceBarrier(1, &barrier);
-
-            for (UINT i = 0; i < textureCount; i++)
-            {
-                if (tempResources[i]) mTextureUploadKeepAlive.push_back(tempResources[i]);
-                if (tempUploads[i]) mTextureUploadKeepAlive.push_back(tempUploads[i]);
-            }
-            mTextureUploadKeepAlive.push_back(uploadBuffer);
-        };
-
-    // Загружаем три массива
-    OutputDebugStringA("Loading albedo array...\n");
-    LoadTexturesToArray(mSubMeshTextures, albedoArray,
-        [](const SubMeshTextures& t) { return t.albedoPath; });
-
-    OutputDebugStringA("Loading normal array...\n");
-    LoadTexturesToArray(mSubMeshTextures, normalArray,
-        [](const SubMeshTextures& t) { return t.normalPath; });
-
-    OutputDebugStringA("Loading height array...\n");
-    LoadTexturesToArray(mSubMeshTextures, heightArray,
-        [](const SubMeshTextures& t) { return t.heightPath; });
-
-    // Сохраняем массивы
-    mAlbedoArray = albedoArray;
-    mNormalArray = normalArray;
-    mHeightArray = heightArray;
-
-    // ============================================
-    // 6. СОЗДАЕМ SRV ДЛЯ ТРЕХ МАССИВОВ
-    // ============================================
-    OutputDebugStringA("Creating SRVs...\n");
-
-    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    auto CreateArraySRV = [&](ID3D12Resource* resource, int slot)
-        {
-            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = resource->GetDesc().Format;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-            srvDesc.Texture2DArray.MostDetailedMip = 0;
-            srvDesc.Texture2DArray.MipLevels = 1;
-            srvDesc.Texture2DArray.FirstArraySlice = 0;
-            srvDesc.Texture2DArray.ArraySize = textureCount;
-            srvDesc.Texture2DArray.PlaneSlice = 0;
-
-            CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
-                mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
-                slot,
-                descriptorSize);
-
-            md3dDevice->CreateShaderResourceView(resource, &srvDesc, hDescriptor);
-        };
-
-    // Слоты: Альбедо, Нормаль, Высота подряд
-    CreateArraySRV(albedoArray.Get(), kTextureSrvBase + 0);
-    CreateArraySRV(normalArray.Get(), kTextureSrvBase + 1);
-    CreateArraySRV(heightArray.Get(), kTextureSrvBase + 2);
-
-    // ============================================
-    // 7. ОБНОВЛЯЕМ ИНДЕКСЫ ДЛЯ SUBMESH
-    // ============================================
-    for (auto& submesh : mSubMeshInfos)
+    for (UINT textureIndex = 0; textureIndex < mSubMeshTextures.size(); ++textureIndex)
     {
-        for (UINT i = 0; i < textureCount; i++)
+        MeshTexture texture;
+        texture.Filename = mSubMeshTextures[textureIndex].albedoPath;
+        const HRESULT result = CreateDDSTextureFromFile12(md3dDevice.Get(), mCommandList.Get(),
+            texture.Filename.c_str(), texture.Resource, texture.UploadHeap);
+        if (FAILED(result))
         {
-            if (mSubMeshTextures[i].albedoPath == submesh.textures.albedoPath)
-            {
-                submesh.textureIndex = i;
-                break;
-            }
+            throw std::runtime_error("Unable to load DDS texture for OBJ material.");
         }
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv = {};
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Format = texture.Resource->GetDesc().Format;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Texture2D.MostDetailedMip = 0;
+        srv.Texture2D.MipLevels = texture.Resource->GetDesc().MipLevels;
+        srv.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+            mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
+            kTextureSrvBase + textureIndex,
+            descriptorSize);
+        md3dDevice->CreateShaderResourceView(texture.Resource.Get(), &srv, handle);
+        mTextures.push_back(std::move(texture));
     }
-
-    mUniqueTextureCount = textureCount * 3;
-
-    OutputDebugStringA(("Loaded " + std::to_string(textureCount) +
-        " materials with albedo, normal, height arrays\n").c_str());
-    OutputDebugStringA("=== LoadAllTextures END ===\n");
 }
-/*
-void App::CreateTextureArraySRV()
-{
-    UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
-        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srvDesc.Format = mTextureFormat;
-    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
-    srvDesc.Texture2DArray.MostDetailedMip = 0;
-    srvDesc.Texture2DArray.MipLevels = 1;
-    srvDesc.Texture2DArray.FirstArraySlice = 0;
-    srvDesc.Texture2DArray.ArraySize = mTextureCount;
-    srvDesc.Texture2DArray.PlaneSlice = 0;
-
-    CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(
-        mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
-        kTextureSrvBase,  // ← Слот для массива текстур
-        descriptorSize);
-
-    md3dDevice->CreateShaderResourceView(mTextureArray.Get(), &srvDesc, hDescriptor);
-}
-*/
