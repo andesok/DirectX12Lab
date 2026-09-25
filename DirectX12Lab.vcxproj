@@ -173,6 +173,7 @@
     <ClInclude Include="framework\tiny_obj_loader.h" />
     <ClInclude Include="framework\UploadBuffer.h" />
     <ClInclude Include="headers\LightData.h" />
+    <ClInclude Include="headers\ParticleSystem.h" />
     <ClInclude Include="headers\Shadowmap.h" />
   </ItemGroup>
   <ItemGroup>
@@ -216,6 +217,12 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
     </FxCompile>
+    <None Include="Shaders\particles_cs.hlsl">
+      <FileType>Document</FileType>
+    </None>
+    <None Include="Shaders\particles_draw.hlsl">
+      <FileType>Document</FileType>
+    </None>
     <FxCompile Include="Shaders\shadow_vs.hlsl" />
     <FxCompile Include="Shaders\tessellation_ds.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Domain</ShaderType>
@@ -257,6 +264,9 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\particles_common.hlsli" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

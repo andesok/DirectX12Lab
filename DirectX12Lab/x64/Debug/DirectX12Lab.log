@@ -1,15 +1,5 @@
-﻿D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(117,20): warning X4000: use of potentially uninitialized variable (ComputeShadow)
-D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(95,94): warning X4000: use of potentially uninitialized variable (SampleShadow)
-D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(146,20): warning X4000: use of potentially uninitialized variable (Attenuation)
-D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(181,20): warning X4000: use of potentially uninitialized variable (ComputePointLight)
-D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(146,20): warning X4000: use of potentially uninitialized variable (Attenuation)
-D:\Projects_C++\DirectX12Lab\Shaders\deferred_ps.hlsl(204,20): warning X4000: use of potentially uninitialized variable (ComputeSpotLight)
-  
-  compilation object save succeeded; see D:\Projects_C++\DirectX12Lab\x64\Debug\deferred_ps.cso
-  compilation object save succeeded; see D:\Projects_C++\DirectX12Lab\x64\Debug\shadow_vs.cso
-  RenderingSystem.cpp
-  App.cpp
-D:\Projects_C++\DirectX12Lab\src\App.cpp(295,24): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+﻿  App.cpp
+D:\Projects_C++\DirectX12Lab\src\App.cpp(309,24): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
   Main.cpp
   Generating Code...
   DirectX12Lab.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe

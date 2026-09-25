@@ -91,6 +91,8 @@ bool App::Initialize()
     mRenderSystem->Initialize();
     mRenderSystem->SetGBuffer(mGBuffer.get());
 
+    BuildParticles();   // буферы частиц, UAV со счётчиками, compute/graphics PSO
+
     UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     UINT rtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
@@ -212,6 +214,10 @@ void App::Update(const GameTimer& gt)
     UpdateSun(dt);
     UpdateShadows();
 
+    // ===== Частицы =====
+    if (WasKeyPressed('B')) mFountain.Enabled = !mFountain.Enabled;
+    UpdateParticles(dt, gt.TotalTime());
+
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.View, XMMatrixTranspose(view));
     XMStoreFloat4x4(&passConstants.Proj, XMMatrixTranspose(proj));
@@ -244,6 +250,11 @@ void App::Draw(const GameTimer& gt)
 {
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+
+    // ============================================
+    // -1. ЧАСТИЦЫ: Compute (Update + Emit) до всех графических проходов
+    // ============================================
+    mParticles->Simulate(mCommandList.Get(), mCbvHeap.Get());
 
     // ============================================
     // 0. SHADOW PASS: по проходу глубины на каскад
@@ -282,6 +293,9 @@ void App::Draw(const GameTimer& gt)
     mRenderSystem->DrawItems(mCommandList.Get(),
         mDrawList.data(), (UINT)mDrawList.size(),
         mCbvHeap.Get(), mSamplerHeap.Get());
+
+    // Непрозрачные частицы пишутся в тот же G-Buffer => получают освещение и тени
+    mParticles->Draw(mCommandList.Get());
 
     // ============================================
     // 2. ТЕССЕЛЯЦИЯ КОЛОДЦА
@@ -392,6 +406,8 @@ void App::Draw(const GameTimer& gt)
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
     mCommandList->ResourceBarrier(1, &transition);
 
+    mParticles->EndFrame(mCommandList.Get());   // ресурсы -> COMMON, swap Append/Consume
+
     ThrowIfFailed(mCommandList->Close());
 
     ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
@@ -428,7 +444,9 @@ void App::OnMouseMove(WPARAM btnState, int x, int y)
 void App::BuildDescriptorHeaps()
 {
     const UINT textureDescriptorCount = mUniqueTextureCount > 0 ? mUniqueTextureCount : 1;
-    const UINT totalDescriptors = kTextureSrvBase + textureDescriptorCount;
+    // После текстур — 4 UAV-дескриптора системы частиц
+    mParticleDescriptorBase = kTextureSrvBase + textureDescriptorCount;
+    const UINT totalDescriptors = mParticleDescriptorBase + ParticleSystem::DescriptorCount;
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
     cbvHeapDesc.NumDescriptors = totalDescriptors;
@@ -1418,5 +1436,73 @@ void App::UpdateShadows()
         mCascadeLambda,
         mShadowCasterCount[0], mShadowCasterCount[1], mShadowCasterCount[2], mShadowCasterCount[3],
         splits[0], splits[1], splits[2], splits[3]);
+    mMainWndCaption += buf;
+}
+
+
+// =====================================================================
+// ДЗ №6: GPU-ЧАСТИЦЫ — ФОНТАН В ЦЕНТРЕ СПОНЗЫ
+// =====================================================================
+
+void App::BuildParticles()
+{
+    const DXGI_FORMAT gBufferFormats[3] = {
+        mGBuffer->GetFormat(0), mGBuffer->GetFormat(1), mGBuffer->GetFormat(2) };
+
+    mParticles = std::make_unique<ParticleSystem>(md3dDevice.Get(), kMaxParticles,
+        gBufferFormats, mDepthStencilFormat);
+    mParticles->Initialize(mCommandList.Get());   // command list открыт в Initialize()
+
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mParticles->BuildDescriptors(
+        CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart(),
+            mParticleDescriptorBase, descriptorSize),
+        CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(),
+            mParticleDescriptorBase, descriptorSize),
+        descriptorSize);
+
+    // ---- Параметры фонтана — от размеров сцены, чтобы подходили к масштабу Sponza ----
+    const float sceneHeight = mSceneMax.y - mSceneMin.y;
+    const float fountainHeight = 0.45f * sceneHeight;     // высота струи
+    const float gravity = 0.6f * sceneHeight;             // ~900 ед/с^2 для Sponza
+    const float speed = sqrtf(2.0f * gravity * fountainHeight); // v = sqrt(2gh)
+
+    mFountain.Position = { mSceneCenter.x, mSceneMin.y + 0.01f * sceneHeight, mSceneCenter.z };
+    mFountain.FloorY = mSceneMin.y;
+    mFountain.Gravity = gravity;
+    mFountain.SpeedMin = 0.80f * speed;
+    mFountain.SpeedMax = 1.00f * speed;
+    mFountain.ConeAngle = 0.22f;                          // ~12.5 градуса от вертикали
+    mFountain.EmitterRadius = 0.006f * sceneHeight;
+    mFountain.EmitRate = 25000.0f;
+    mFountain.LifetimeMin = 3.0f;
+    mFountain.LifetimeMax = 5.0f;
+    mFountain.SizeMin = 0.0020f * sceneHeight;
+    mFountain.SizeMax = 0.0040f * sceneHeight;
+    mFountain.Bounce = 0.35f;
+    mFountain.Enabled = true;
+}
+
+void App::UpdateParticles(float dt, float totalTime)
+{
+    if (!mParticles || !mCamera) return;
+
+    // Сколько частиц было живо после прошлого кадра (GPU уже закончил — Draw() делает Flush)
+    mAliveParticles = mParticles->ReadAliveCount();
+
+    XMFLOAT3 right, up, look;
+    const XMVECTOR L = XMVector3Normalize(mCamera->GetLook());
+    const XMVECTOR R = XMVector3Normalize(mCamera->GetRight());
+    XMStoreFloat3(&look, L);
+    XMStoreFloat3(&right, R);
+    XMStoreFloat3(&up, XMVector3Normalize(XMVector3Cross(L, R)));   // LH: up = look x right
+
+    const XMMATRIX viewProj = mCamera->GetView() * mCamera->GetProj();
+    mParticles->Update(dt, totalTime, mFountain, viewProj, right, up, look);
+
+    wchar_t buf[128];
+    swprintf_s(buf, L" || Fountain[B]: %s | Particles: %u/%u",
+        mFountain.Enabled ? L"ON" : L"OFF", mAliveParticles, kMaxParticles);
     mMainWndCaption += buf;
 }

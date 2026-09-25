@@ -98,6 +98,9 @@
     <ClInclude Include="headers\Shadowmap.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="headers\ParticleSystem.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\geometry_vs.hlsl" />
@@ -109,5 +112,10 @@
     <FxCompile Include="Shaders\tessellation_ds.hlsl" />
     <FxCompile Include="Shaders\tessellation_ps.hlsl" />
     <FxCompile Include="Shaders\shadow_vs.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Shaders\particles_common.hlsli" />
+    <None Include="Shaders\particles_cs.hlsl" />
+    <None Include="Shaders\particles_draw.hlsl" />
   </ItemGroup>
 </Project>

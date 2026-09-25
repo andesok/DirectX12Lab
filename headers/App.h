@@ -11,6 +11,7 @@
 #include "../headers/Frustum.h"
 #include "../headers/Octree.h"
 #include "../headers/ShadowMap.h"
+#include "../headers/ParticleSystem.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -162,6 +163,10 @@ private:
     void UpdateSun(float dt);
     void UpdateShadows();
 
+    // ===== ДЗ №6: частицы =====
+    void BuildParticles();
+    void UpdateParticles(float dt, float totalTime);
+
 private:
     std::unique_ptr<Camera> mCamera;
     ComPtr<ID3D12RootSignature> mRootSignature;
@@ -272,4 +277,13 @@ private:
     float mSunAzimuth = 0.3f;        // стрелки влево/вправо
     float mSunElevation = 1.2f;      // стрелки вверх/вниз (радианы над горизонтом)
     XMFLOAT3 mSunDir = { 0.0f, -1.0f, 0.0f };
+
+    // ============================================
+    // ДЗ №6: GPU-ЧАСТИЦЫ (ФОНТАН)
+    // ============================================
+    static constexpr UINT kMaxParticles = 200000;
+    std::unique_ptr<ParticleSystem> mParticles;
+    FountainSettings mFountain;
+    UINT mParticleDescriptorBase = 0;   // первый из 4 UAV-дескрипторов в mCbvHeap
+    UINT mAliveParticles = 0;
 };
