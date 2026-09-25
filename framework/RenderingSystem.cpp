@@ -33,9 +33,9 @@ void RenderingSystem::BuildRootSignature()
 {
     CD3DX12_ROOT_PARAMETER slotRootParameter[3];
 
-    CD3DX12_DESCRIPTOR_RANGE cbvTable;
-    cbvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-    slotRootParameter[0].InitAsDescriptorTable(1, &cbvTable);
+    // Слот 0: root CBV (b0). Адрес задаётся на каждый объект через
+    // SetGraphicsRootConstantBufferView — не нужны тысячи CBV в куче.
+    slotRootParameter[0].InitAsConstantBufferView(0);
 
     CD3DX12_DESCRIPTOR_RANGE srvTable;
     srvTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
@@ -160,10 +160,8 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     }
     else
     {
-        // Слот 0: CBV
-        auto cbvHandle = handle;
-        cbvHandle.ptr += item.CBIndex * descriptorSize;
-        cmdList->SetGraphicsRootDescriptorTable(0, cbvHandle);
+        // Слот 0: CBV (root descriptor)
+        cmdList->SetGraphicsRootConstantBufferView(0, item.CBAddress);
 
         // Слот 1: SRV
         auto srvHandle = handle;
@@ -198,13 +196,65 @@ void RenderingSystem::DrawItem(ID3D12GraphicsCommandList* cmdList,
     // ============================================
     // 6. РИСУЕМ
     // ============================================
-    auto& submesh = item.Mesh->DrawArgs[item.SubmeshName];
     cmdList->DrawIndexedInstanced(
-        submesh.IndexCount,
+        item.IndexCount,
         1,
-        submesh.StartIndexLocation,
-        submesh.BaseVertexLocation,
+        item.StartIndexLocation,
+        item.BaseVertexLocation,
         0);
+}
+
+void RenderingSystem::DrawItems(ID3D12GraphicsCommandList* cmdList,
+    const RenderItem* items,
+    UINT count,
+    ID3D12DescriptorHeap* mainHeap,
+    ID3D12DescriptorHeap* samplerHeap)
+{
+    if (count == 0) return;
+
+    // Всё общее состояние — один раз на весь проход
+    cmdList->SetPipelineState(mGeometryPSO.Get());
+    cmdList->SetGraphicsRootSignature(mRootSignature.Get());
+
+    ID3D12DescriptorHeap* heaps[] = { mainHeap, samplerHeap };
+    cmdList->SetDescriptorHeaps(_countof(heaps), heaps);
+    cmdList->SetGraphicsRootDescriptorTable(2, samplerHeap->GetGPUDescriptorHandleForHeapStart());
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const D3D12_GPU_DESCRIPTOR_HANDLE heapStart = mainHeap->GetGPUDescriptorHandleForHeapStart();
+
+    const MeshGeometry* boundMesh = nullptr;
+    UINT boundSrv = UINT_MAX;
+
+    for (UINT i = 0; i < count; ++i)
+    {
+        const RenderItem& item = items[i];
+
+        // Меняем VB/IB только при смене меша
+        if (item.Mesh != boundMesh)
+        {
+            auto vbv = item.Mesh->VertexBufferView();
+            auto ibv = item.Mesh->IndexBufferView();
+            cmdList->IASetVertexBuffers(0, 1, &vbv);
+            cmdList->IASetIndexBuffer(&ibv);
+            boundMesh = item.Mesh;
+        }
+
+        // Меняем текстуру только при смене SRV
+        if (item.SRVIndex != boundSrv)
+        {
+            D3D12_GPU_DESCRIPTOR_HANDLE srv = heapStart;
+            srv.ptr += (UINT64)item.SRVIndex * descriptorSize;
+            cmdList->SetGraphicsRootDescriptorTable(1, srv);
+            boundSrv = item.SRVIndex;
+        }
+
+        cmdList->SetGraphicsRootConstantBufferView(0, item.CBAddress);
+        cmdList->DrawIndexedInstanced(item.IndexCount, 1,
+            item.StartIndexLocation, item.BaseVertexLocation, 0);
+    }
 }
 
 void RenderingSystem::BuildDeferredRootSignature()

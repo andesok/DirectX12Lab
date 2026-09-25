@@ -8,6 +8,8 @@
 #include "../framework/GBuffer.h"
 #include "../headers/Camera.h"
 #include "../headers/LightData.h"
+#include "../headers/Frustum.h"
+#include "../headers/Octree.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -66,6 +68,19 @@ struct Vertex
     UINT TexIndex;
 };
 
+// Один объект сцены (сабмеш Sponza или разбросанный куб)
+struct SceneObject
+{
+    MeshGeometry* Mesh = nullptr;
+    UINT IndexCount = 0;
+    UINT StartIndexLocation = 0;
+    INT  BaseVertexLocation = 0;
+    UINT SRVIndex = 0;
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
+    BoundingBox Bounds;          // AABB в мировых координатах
+    bool IsWell = false;         // рисуется тесселяцией, если она включена
+};
+
 struct ObjectConstants
 {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
@@ -98,9 +113,12 @@ private:
 
     void BuildModelGeometry(std::string modelPath, std::string baseDir);
     void BuildModelGeometryLegacy(std::string modelPath, std::string baseDir);
-    void LoadTextureToArray(const std::wstring& path, UINT arrayIndex);
-    void CreateTextureArraySRV();
-    void LoadAllTexturesLegacy();
+
+    // ===== ДЗ №4: объекты сцены и отсечение =====
+    void BuildScatterGeometry();
+    void BuildSceneObjects();
+    void UpdateCulling(float totalTime);
+    bool WasKeyPressed(int vkey);
 
 private:
     std::unique_ptr<Camera> mCamera;
@@ -136,7 +154,7 @@ private:
 
     std::unique_ptr<RenderingSystem> mRenderSystem;
     std::unique_ptr<GBuffer> mGBuffer;
-    
+
     std::vector<Light> mLights;
 
     Light* mMainLight = nullptr;
@@ -164,4 +182,29 @@ private:
     ComPtr<ID3D12Resource> mAlbedoArray;
     ComPtr<ID3D12Resource> mNormalArray;
     ComPtr<ID3D12Resource> mHeightArray;
+
+    // ============================================
+    // ДЗ №4: FRUSTUM CULLING + OCTREE
+    // ============================================
+    static constexpr UINT kScatterCount = 5000;   // уменьшите, если ноутбук не тянет
+
+    XMFLOAT3 mSceneMin = { 0.0f, 0.0f, 0.0f };
+    XMFLOAT3 mSceneMax = { 0.0f, 0.0f, 0.0f };
+
+    std::unique_ptr<MeshGeometry> mScatterGeo;     // куб для разбрасывания
+    std::vector<SceneObject> mSceneObjects;        // все объекты сцены
+    std::vector<UINT> mVisibleObjects;             // индексы видимых в этом кадре
+    std::vector<RenderItem> mDrawList;             // что рисуем в этом кадре
+
+    Octree mOctree;
+    Frustum mCullFrustum;
+    CullStats mCullStats;
+    double mCullTimeMs = 0.0;
+
+    bool mFrustumCullingEnabled = true;   // клавиша C
+    bool mUseOctree = true;               // клавиша O
+    bool mFreezeFrustum = false;          // клавиша F — «заморозить» пирамиду для отладки
+    XMFLOAT4X4 mFrozenViewProj = MathHelper::Identity4x4();
+
+    bool mKeyWasDown[256] = {};
 };

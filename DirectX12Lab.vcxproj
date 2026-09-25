@@ -158,6 +158,8 @@
     <ClCompile Include="src\Main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="headers\Frustum.h" />
+    <ClInclude Include="headers\Octree.h" />
     <ClInclude Include="headers\App.h" />
     <ClInclude Include="headers\Camera.h" />
     <ClInclude Include="framework\d3dApp.h" />

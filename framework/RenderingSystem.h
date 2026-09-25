@@ -22,8 +22,10 @@ enum class ShaderType {
 
 struct RenderItem {
     MeshGeometry* Mesh = nullptr;
-    std::string SubmeshName;
-    UINT CBIndex = 0;
+    UINT IndexCount = 0;
+    UINT StartIndexLocation = 0;
+    INT  BaseVertexLocation = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS CBAddress = 0; // адрес ObjectConstants этого объекта (root CBV)
     UINT SRVIndex = 0;
     ShaderType Shader = ShaderType::TEXTURE;
     bool UseTessellation = false;
@@ -45,6 +47,12 @@ public:
         ID3D12DescriptorHeap* mainHeap,
         ID3D12DescriptorHeap* samplerHeap,
         bool isGeometryPass);
+    // Быстрый путь для тысяч объектов: PSO/root signature/кучи ставятся один раз
+    void DrawItems(ID3D12GraphicsCommandList* cmdList,
+        const RenderItem* items,
+        UINT count,
+        ID3D12DescriptorHeap* mainHeap,
+        ID3D12DescriptorHeap* samplerHeap);
     void SetGBuffer(GBuffer* gBuffer) { mGBuffer = gBuffer; }
     void EndFrame(ID3D12GraphicsCommandList* cmdList,
         ID3D12DescriptorHeap* cbvHeap,
@@ -77,7 +85,7 @@ private:
 
     ComPtr<ID3DBlob> mvsByteCode;
     ComPtr<ID3DBlob> mpsByteCode;
-    ComPtr<ID3DBlob> mWaveVSByteCode ;
+    ComPtr<ID3DBlob> mWaveVSByteCode;
     std::vector<D3D12_INPUT_ELEMENT_DESC> mInputLayout;
 
     GBuffer* mGBuffer;

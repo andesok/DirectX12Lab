@@ -3,6 +3,9 @@
 #include <filesystem>
 #include <cfloat>
 #include <stdexcept>
+#include <random>
+#include <chrono>
+#include <cstdio>
 
 App::App(HINSTANCE hInstance)
     : D3DApp(hInstance)
@@ -35,11 +38,13 @@ void App::BuildSampler()
 
 bool App::Initialize()
 {
-    if(!D3DApp::Initialize()) return false;
-		
+    if (!D3DApp::Initialize()) return false;
+
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
 
     BuildModelGeometry("Models/Sponza/sponza.obj", "Models/Sponza/");
+    BuildScatterGeometry();   // куб для разбрасывания
+    BuildSceneObjects();      // Sponza-сабмеши + тысячи кубов + окто-дерево
 
     BuildDescriptorHeaps();
     BuildConstantBuffers();
@@ -136,21 +141,21 @@ bool App::Initialize()
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
-	ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
-	mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+    ID3D12CommandList* cmdsLists[] = { mCommandList.Get() };
+    mCommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
     // Wait until initialization is complete.
     FlushCommandQueue();
     mTextureUploadKeepAlive.clear();
-	return true;
+    return true;
 }
 
 void App::OnResize()
 {
-	D3DApp::OnResize();
+    D3DApp::OnResize();
 
     // The window resized, so update the aspect ratio and recompute the projection matrix.
-    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f*MathHelper::Pi, AspectRatio(), 1.0f, 10000.0f);
+    XMMATRIX P = XMMatrixPerspectiveFovLH(0.25f * MathHelper::Pi, AspectRatio(), 1.0f, 10000.0f);
     XMStoreFloat4x4(&mProj, P);
 
     if (mCamera)
@@ -163,7 +168,7 @@ void App::Update(const GameTimer& gt)
 {
     if (!mCamera) return;
     float dt = gt.DeltaTime();
-    float speed = 400.0f * dt;
+    float speed = 800.0f * dt;
 
     DirectX::XMVECTOR look = mCamera->GetLook();
     DirectX::XMVECTOR right = mCamera->GetRight();
@@ -183,18 +188,16 @@ void App::Update(const GameTimer& gt)
     mCamera->SetPosition(newPos);
     mCamera->UpdateViewMatrix();
 
+    // ===== Переключатели ДЗ №4 =====
+    if (WasKeyPressed('C')) mFrustumCullingEnabled = !mFrustumCullingEnabled;
+    if (WasKeyPressed('O')) mUseOctree = !mUseOctree;
+    if (WasKeyPressed('F')) mFreezeFrustum = !mFreezeFrustum;
+
     XMMATRIX view = mCamera->GetView();
     XMMATRIX proj = mCamera->GetProj();
-    XMMATRIX world = XMLoadFloat4x4(&mWorld);
-    XMMATRIX worldViewProj = world * view * proj;
 
-	ObjectConstants objConstants;
-
-    XMStoreFloat4x4(&objConstants.WorldViewProj, XMMatrixTranspose(worldViewProj));
-    XMStoreFloat4x4(&objConstants.World, XMMatrixTranspose(world));
-    objConstants.gTime = gt.TotalTime();
-
-    mObjectCB->CopyData(0, objConstants);
+    // Отсечение + заполнение константных буферов только для видимых объектов
+    UpdateCulling(gt.TotalTime());
 
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.View, XMMatrixTranspose(view));
@@ -238,23 +241,10 @@ void App::Draw(const GameTimer& gt)
     UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
         D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // Each submesh owns a material SRV, so models may freely mix texture sizes.
-    for (const auto& submeshInfo : mSubMeshInfos)
-    {
-        if (mEnableTessellation && submeshInfo.name.find("Well") != std::string::npos)
-        {
-            continue;
-        }
-
-        RenderItem item;
-        item.Mesh = mGeo.get();
-        item.SubmeshName = submeshInfo.name;
-        item.CBIndex = 0;
-        item.SRVIndex = kTextureSrvBase + submeshInfo.textureIndex;
-
-        mRenderSystem->DrawItem(mCommandList.Get(), item, mCbvHeap.Get(),
-            mSamplerHeap.Get(), true);
-    }
+    // Рисуем только то, что прошло отсечение (список собран в UpdateCulling)
+    mRenderSystem->DrawItems(mCommandList.Get(),
+        mDrawList.data(), (UINT)mDrawList.size(),
+        mCbvHeap.Get(), mSamplerHeap.Get());
 
     // ============================================
     // 2. ТЕССЕЛЯЦИЯ КОЛОДЦА
@@ -418,18 +408,20 @@ void App::BuildDescriptorHeaps()
 
 void App::BuildConstantBuffers()
 {
-	mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), 1, true);
+    // По одному 256-байтному слоту на КАЖДЫЙ объект сцены
+    const UINT objectCount = (std::max)(1u, (UINT)mSceneObjects.size());
+    mObjectCB = std::make_unique<UploadBuffer<ObjectConstants>>(md3dDevice.Get(), objectCount, true);
 
-	UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    UINT objCBByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
-	D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
+    D3D12_GPU_VIRTUAL_ADDRESS cbAddress = mObjectCB->Resource()->GetGPUVirtualAddress();
     // Offset to the ith object constant buffer in the buffer.
     int boxCBufIndex = 0;
-	cbAddress += boxCBufIndex*objCBByteSize;
+    cbAddress += boxCBufIndex * objCBByteSize;
 
-	D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
-	cbvDesc.BufferLocation = cbAddress;
-	cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc;
+    cbvDesc.BufferLocation = cbAddress;
+    cbvDesc.SizeInBytes = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
 
     md3dDevice->CreateConstantBufferView(&cbvDesc, mCbvHeap->GetCPUDescriptorHandleForHeapStart());
 }
@@ -471,18 +463,20 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
         (minimum.y + maximum.y) * 0.5f,
         (minimum.z + maximum.z) * 0.5f };
     mSceneRadius = XMVectorGetX(XMVector3Length(XMLoadFloat3(&maximum) - XMLoadFloat3(&mSceneCenter)));
+    mSceneMin = minimum;
+    mSceneMax = maximum;
 
     auto texturePathFor = [&baseDir](const std::string& sourcePath)
-    {
-        if (sourcePath.empty())
         {
-            return std::wstring();
-        }
+            if (sourcePath.empty())
+            {
+                return std::wstring();
+            }
 
-        std::filesystem::path path = std::filesystem::path(baseDir) / sourcePath;
-        path.replace_extension(".dds");
-        return path.wstring();
-    };
+            std::filesystem::path path = std::filesystem::path(baseDir) / sourcePath;
+            path.replace_extension(".dds");
+            return path.wstring();
+        };
 
     std::unordered_map<std::wstring, int> textureIndices;
     mSubMeshTextures.clear();
@@ -522,62 +516,70 @@ void App::BuildModelGeometry(std::string modelPath, std::string baseDir)
 
     auto appendSubmesh = [&](const std::string& name, int materialId,
         const std::vector<tinyobj::index_t>& faceIndices)
-    {
-        if (faceIndices.empty())
         {
-            return;
-        }
-
-        const UINT startVertex = static_cast<UINT>(vertices.size());
-        const UINT startIndex = static_cast<UINT>(indices.size());
-        const int textureIndex = materialId >= 0 && materialId < static_cast<int>(materialTextureIndices.size())
-            ? materialTextureIndices[materialId] : 0;
-
-        for (const tinyobj::index_t& index : faceIndices)
-        {
-            Vertex vertex = {};
-            if (index.vertex_index >= 0)
+            if (faceIndices.empty())
             {
-                vertex.Pos = {
-                    attrib.vertices[3 * index.vertex_index],
-                    attrib.vertices[3 * index.vertex_index + 1],
-                    attrib.vertices[3 * index.vertex_index + 2] };
+                return;
             }
-            if (index.normal_index >= 0)
-            {
-                vertex.Normal = {
-                    attrib.normals[3 * index.normal_index],
-                    attrib.normals[3 * index.normal_index + 1],
-                    attrib.normals[3 * index.normal_index + 2] };
-            }
-            else
-            {
-                vertex.Normal = { 0.0f, 1.0f, 0.0f };
-            }
-            if (index.texcoord_index >= 0)
-            {
-                vertex.TexCoord = {
-                    attrib.texcoords[2 * index.texcoord_index],
-                    1.0f - attrib.texcoords[2 * index.texcoord_index + 1] };
-            }
-            vertex.Tangent = { 1.0f, 0.0f, 0.0f };
-            vertex.TexIndex = static_cast<UINT>(textureIndex);
-            vertices.push_back(vertex);
-            indices.push_back(static_cast<UINT>(vertices.size() - 1));
-        }
 
-        const std::string uniqueName = name + "_" + std::to_string(mSubMeshInfos.size());
-        mGeo->DrawArgs[uniqueName] = { static_cast<UINT>(faceIndices.size()), startIndex, 0 };
+            const UINT startVertex = static_cast<UINT>(vertices.size());
+            const UINT startIndex = static_cast<UINT>(indices.size());
+            const int textureIndex = materialId >= 0 && materialId < static_cast<int>(materialTextureIndices.size())
+                ? materialTextureIndices[materialId] : 0;
 
-        SubMeshInfo info = {};
-        info.name = uniqueName;
-        info.indexCount = static_cast<UINT>(faceIndices.size());
-        info.startIndex = startIndex;
-        info.materialName = materialId >= 0 && materialId < static_cast<int>(materials.size())
-            ? materials[materialId].name : "default";
-        info.textureIndex = textureIndex;
-        mSubMeshInfos.push_back(std::move(info));
-    };
+            for (const tinyobj::index_t& index : faceIndices)
+            {
+                Vertex vertex = {};
+                if (index.vertex_index >= 0)
+                {
+                    vertex.Pos = {
+                        attrib.vertices[3 * index.vertex_index],
+                        attrib.vertices[3 * index.vertex_index + 1],
+                        attrib.vertices[3 * index.vertex_index + 2] };
+                }
+                if (index.normal_index >= 0)
+                {
+                    vertex.Normal = {
+                        attrib.normals[3 * index.normal_index],
+                        attrib.normals[3 * index.normal_index + 1],
+                        attrib.normals[3 * index.normal_index + 2] };
+                }
+                else
+                {
+                    vertex.Normal = { 0.0f, 1.0f, 0.0f };
+                }
+                if (index.texcoord_index >= 0)
+                {
+                    vertex.TexCoord = {
+                        attrib.texcoords[2 * index.texcoord_index],
+                        1.0f - attrib.texcoords[2 * index.texcoord_index + 1] };
+                }
+                vertex.Tangent = { 1.0f, 0.0f, 0.0f };
+                vertex.TexIndex = static_cast<UINT>(textureIndex);
+                vertices.push_back(vertex);
+                indices.push_back(static_cast<UINT>(vertices.size() - 1));
+            }
+
+            const std::string uniqueName = name + "_" + std::to_string(mSubMeshInfos.size());
+
+            SubmeshGeometry submesh;
+            submesh.IndexCount = static_cast<UINT>(faceIndices.size());
+            submesh.StartIndexLocation = startIndex;
+            submesh.BaseVertexLocation = 0;
+            // AABB сабмеша по его вершинам (Sponza не трансформируется => это мировой AABB)
+            BoundingBox::CreateFromPoints(submesh.Bounds, faceIndices.size(),
+                &vertices[startVertex].Pos, sizeof(Vertex));
+            mGeo->DrawArgs[uniqueName] = submesh;
+
+            SubMeshInfo info = {};
+            info.name = uniqueName;
+            info.indexCount = static_cast<UINT>(faceIndices.size());
+            info.startIndex = startIndex;
+            info.materialName = materialId >= 0 && materialId < static_cast<int>(materials.size())
+                ? materials[materialId].name : "default";
+            info.textureIndex = textureIndex;
+            mSubMeshInfos.push_back(std::move(info));
+        };
 
     for (size_t shapeIndex = 0; shapeIndex < shapes.size(); ++shapeIndex)
     {
@@ -973,4 +975,253 @@ void App::LoadAllTextures()
         md3dDevice->CreateShaderResourceView(texture.Resource.Get(), &srv, handle);
         mTextures.push_back(std::move(texture));
     }
+}
+
+// =====================================================================
+// ДЗ №4
+// =====================================================================
+
+bool App::WasKeyPressed(int vkey)
+{
+    // Срабатывает один раз в момент нажатия (а не каждый кадр, пока держим)
+    const bool down = d3dUtil::IsKeyDown(vkey);
+    const bool pressed = down && !mKeyWasDown[vkey & 0xFF];
+    mKeyWasDown[vkey & 0xFF] = down;
+    return pressed;
+}
+
+void App::BuildScatterGeometry()
+{
+    // Единичный куб [-0.5; 0.5]^3, 24 вершины (у каждой грани свои нормали/UV)
+    struct Face { XMFLOAT3 n, u, v; };
+    const Face faces[6] = {
+        { { 0, 0, -1 }, {  1, 0, 0 }, { 0, 1, 0 } },
+        { { 0, 0,  1 }, { -1, 0, 0 }, { 0, 1, 0 } },
+        { { -1, 0, 0 }, { 0, 0, -1 }, { 0, 1, 0 } },
+        { {  1, 0, 0 }, { 0, 0,  1 }, { 0, 1, 0 } },
+        { { 0,  1, 0 }, { 1, 0, 0 }, { 0, 0,  1 } },
+        { { 0, -1, 0 }, { 1, 0, 0 }, { 0, 0, -1 } },
+    };
+
+    std::vector<Vertex> vertices;
+    std::vector<std::uint32_t> indices;
+
+    for (const Face& f : faces)
+    {
+        const XMVECTOR n = XMLoadFloat3(&f.n);
+        const XMVECTOR u = XMLoadFloat3(&f.u);
+        const XMVECTOR v = XMLoadFloat3(&f.v);
+        const XMVECTOR c = n * 0.5f;
+
+        const float su[4] = { -0.5f, -0.5f,  0.5f, 0.5f };
+        const float sv[4] = { -0.5f,  0.5f,  0.5f, -0.5f };
+        const XMFLOAT2 uv[4] = { {0, 1}, {0, 0}, {1, 0}, {1, 1} };
+
+        const std::uint32_t base = (std::uint32_t)vertices.size();
+        for (int i = 0; i < 4; ++i)
+        {
+            Vertex vert = {};
+            XMStoreFloat3(&vert.Pos, c + u * su[i] + v * sv[i]);
+            vert.Normal = f.n;
+            vert.TexCoord = uv[i];
+            vert.Tangent = f.u;
+            vert.TexIndex = 0;
+            vertices.push_back(vert);
+        }
+        // Обход по часовой стрелке при взгляде снаружи (front face в D3D)
+        indices.insert(indices.end(), { base, base + 1, base + 2, base, base + 2, base + 3 });
+    }
+
+    mScatterGeo = std::make_unique<MeshGeometry>();
+    mScatterGeo->Name = "ScatterCube";
+
+    const UINT vbByteSize = (UINT)(vertices.size() * sizeof(Vertex));
+    const UINT ibByteSize = (UINT)(indices.size() * sizeof(std::uint32_t));
+
+    mScatterGeo->VertexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(),
+        vertices.data(), vbByteSize, mScatterGeo->VertexBufferUploader);
+    mScatterGeo->IndexBufferGPU = d3dUtil::CreateDefaultBuffer(md3dDevice.Get(), mCommandList.Get(),
+        indices.data(), ibByteSize, mScatterGeo->IndexBufferUploader);
+
+    mScatterGeo->VertexByteStride = sizeof(Vertex);
+    mScatterGeo->VertexBufferByteSize = vbByteSize;
+    mScatterGeo->IndexFormat = DXGI_FORMAT_R32_UINT;
+    mScatterGeo->IndexBufferByteSize = ibByteSize;
+
+    SubmeshGeometry cube;
+    cube.IndexCount = (UINT)indices.size();
+    cube.StartIndexLocation = 0;
+    cube.BaseVertexLocation = 0;
+    cube.Bounds = BoundingBox(XMFLOAT3(0, 0, 0), XMFLOAT3(0.5f, 0.5f, 0.5f));
+    mScatterGeo->DrawArgs["cube"] = cube;
+}
+
+void App::BuildSceneObjects()
+{
+    mSceneObjects.clear();
+    mSceneObjects.reserve(mSubMeshInfos.size() + kScatterCount);
+
+    // ---- 1. Сабмеши Sponza — тоже отдельные объекты для отсечения ----
+    for (const SubMeshInfo& info : mSubMeshInfos)
+    {
+        const SubmeshGeometry& sm = mGeo->DrawArgs[info.name];
+
+        SceneObject obj;
+        obj.Mesh = mGeo.get();
+        obj.IndexCount = sm.IndexCount;
+        obj.StartIndexLocation = sm.StartIndexLocation;
+        obj.BaseVertexLocation = sm.BaseVertexLocation;
+        obj.SRVIndex = kTextureSrvBase + info.textureIndex;
+        obj.World = MathHelper::Identity4x4();
+        obj.Bounds = sm.Bounds;
+        obj.IsWell = info.name.find("Well") != std::string::npos;
+        mSceneObjects.push_back(obj);
+    }
+
+    // ---- 2. Тысячи кубов, случайно раскиданных внутри Sponza ----
+    std::mt19937 rng(12345); // фиксированное зерно => одинаковая сцена при каждом запуске
+    const XMFLOAT3 size = {
+        mSceneMax.x - mSceneMin.x,
+        mSceneMax.y - mSceneMin.y,
+        mSceneMax.z - mSceneMin.z };
+
+    std::uniform_real_distribution<float> distX(mSceneMin.x + 0.05f * size.x, mSceneMax.x - 0.05f * size.x);
+    std::uniform_real_distribution<float> distY(mSceneMin.y + 0.02f * size.y, mSceneMin.y + 0.75f * size.y);
+    std::uniform_real_distribution<float> distZ(mSceneMin.z + 0.05f * size.z, mSceneMax.z - 0.05f * size.z);
+    std::uniform_real_distribution<float> distScale(mSceneRadius * 0.004f, mSceneRadius * 0.012f);
+    std::uniform_real_distribution<float> distAngle(0.0f, XM_2PI);
+    std::uniform_int_distribution<int> distTex(0, (std::max)(0, mUniqueTextureCount - 1));
+
+    const SubmeshGeometry& cube = mScatterGeo->DrawArgs["cube"];
+
+    for (UINT i = 0; i < kScatterCount; ++i)
+    {
+        const float scale = distScale(rng);
+        const XMMATRIX world =
+            XMMatrixScaling(scale, scale, scale) *
+            XMMatrixRotationRollPitchYaw(distAngle(rng), distAngle(rng), distAngle(rng)) *
+            XMMatrixTranslation(distX(rng), distY(rng), distZ(rng));
+
+        SceneObject obj;
+        obj.Mesh = mScatterGeo.get();
+        obj.IndexCount = cube.IndexCount;
+        obj.StartIndexLocation = cube.StartIndexLocation;
+        obj.BaseVertexLocation = cube.BaseVertexLocation;
+        obj.SRVIndex = kTextureSrvBase + distTex(rng);
+        XMStoreFloat4x4(&obj.World, world);
+
+        // Локальный AABB -> мировой AABB (Transform пересчитывает AABB по 8 углам)
+        cube.Bounds.Transform(obj.Bounds, world);
+        mSceneObjects.push_back(obj);
+    }
+
+    // ---- 3. Окто-дерево по мировым AABB ----
+    std::vector<BoundingBox> bounds;
+    bounds.reserve(mSceneObjects.size());
+    for (const SceneObject& obj : mSceneObjects)
+        bounds.push_back(obj.Bounds);
+
+    const auto t0 = std::chrono::high_resolution_clock::now();
+    mOctree.Build(bounds, /*maxDepth*/ 8, /*maxObjectsPerNode*/ 16);
+    const auto t1 = std::chrono::high_resolution_clock::now();
+
+    const double buildMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    OutputDebugStringA(("Octree: objects=" + std::to_string(mSceneObjects.size()) +
+        " nodes=" + std::to_string(mOctree.NodeCount()) +
+        " build=" + std::to_string(buildMs) + " ms\n").c_str());
+
+    mVisibleObjects.reserve(mSceneObjects.size());
+    mDrawList.reserve(mSceneObjects.size());
+}
+
+void App::UpdateCulling(float totalTime)
+{
+    const XMMATRIX view = mCamera->GetView();
+    const XMMATRIX proj = mCamera->GetProj();
+    const XMMATRIX viewProj = view * proj;
+
+    // Пирамида для отсечения. При «заморозке» остаётся старая —
+    // можно отлететь и посмотреть, что рисуется только её содержимое.
+    if (!mFreezeFrustum)
+        XMStoreFloat4x4(&mFrozenViewProj, viewProj);
+
+    const auto t0 = std::chrono::high_resolution_clock::now();
+
+    mCullFrustum.ExtractFromViewProj(XMLoadFloat4x4(&mFrozenViewProj));
+    mVisibleObjects.clear();
+    mCullStats = {};
+
+    const UINT total = (UINT)mSceneObjects.size();
+
+    if (!mFrustumCullingEnabled)
+    {
+        // Отсечение выключено — рисуем всё
+        for (UINT i = 0; i < total; ++i)
+            mVisibleObjects.push_back(i);
+        mCullStats.Visible = total;
+    }
+    else if (mUseOctree)
+    {
+        // Иерархическое отсечение через окто-дерево
+        mOctree.Query(mCullFrustum, mVisibleObjects, mCullStats);
+    }
+    else
+    {
+        // Полный перебор: каждый объект против 6 плоскостей
+        for (UINT i = 0; i < total; ++i)
+        {
+            ++mCullStats.ObjectTests;
+            if (mCullFrustum.IsVisible(mSceneObjects[i].Bounds))
+                mVisibleObjects.push_back(i);
+        }
+        mCullStats.Visible = (UINT)mVisibleObjects.size();
+    }
+
+    const auto t1 = std::chrono::high_resolution_clock::now();
+    mCullTimeMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+    // ---- Константы и список отрисовки только для видимых ----
+    // GPU простаивает (Draw() заканчивается FlushCommandQueue), поэтому
+    // перезаписывать upload-буфер здесь безопасно.
+    const UINT cbByteSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ObjectConstants));
+    const D3D12_GPU_VIRTUAL_ADDRESS cbBase = mObjectCB->Resource()->GetGPUVirtualAddress();
+
+    mDrawList.clear();
+    UINT slot = 0;
+    for (UINT idx : mVisibleObjects)
+    {
+        const SceneObject& obj = mSceneObjects[idx];
+        if (mEnableTessellation && obj.IsWell)
+            continue; // колодец рисует проход тесселяции
+
+        const XMMATRIX world = XMLoadFloat4x4(&obj.World);
+
+        ObjectConstants c;
+        XMStoreFloat4x4(&c.WorldViewProj, XMMatrixTranspose(world * viewProj));
+        XMStoreFloat4x4(&c.World, XMMatrixTranspose(world));
+        c.gTime = totalTime;
+        mObjectCB->CopyData(slot, c);
+
+        RenderItem item;
+        item.Mesh = obj.Mesh;
+        item.IndexCount = obj.IndexCount;
+        item.StartIndexLocation = obj.StartIndexLocation;
+        item.BaseVertexLocation = obj.BaseVertexLocation;
+        item.SRVIndex = obj.SRVIndex;
+        item.CBAddress = cbBase + (UINT64)slot * cbByteSize;
+        mDrawList.push_back(item);
+
+        ++slot;
+    }
+
+    // ---- Статистика в заголовок окна (обновляется раз в секунду вместе с fps) ----
+    wchar_t caption[256];
+    swprintf_s(caption, L"HW4 | Culling[C]: %s | Octree[O]: %s | Freeze[F]: %s | Visible: %u/%u | NodeTests: %u | ObjTests: %u | Cull: %.3f ms",
+        mFrustumCullingEnabled ? L"ON" : L"OFF",
+        mUseOctree ? L"ON" : L"OFF",
+        mFreezeFrustum ? L"ON" : L"OFF",
+        mCullStats.Visible, total,
+        mCullStats.NodeTests, mCullStats.ObjectTests,
+        mCullTimeMs);
+    mMainWndCaption = caption;
 }
