@@ -61,7 +61,18 @@ public:
         GBuffer* gBuffer,
         D3D12_GPU_VIRTUAL_ADDRESS passCBAddress,
         D3D12_GPU_VIRTUAL_ADDRESS lightBufferAddress,
-        UINT numLights);
+        UINT numLights,
+        D3D12_GPU_DESCRIPTOR_HANDLE shadowMapSrv,
+        D3D12_GPU_VIRTUAL_ADDRESS cascadeCBAddress);
+
+    // Рендер одного каскада карты теней (только глубина)
+    void DrawShadowCascade(ID3D12GraphicsCommandList* cmdList,
+        D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+        const D3D12_VIEWPORT& viewport,
+        const D3D12_RECT& scissor,
+        D3D12_GPU_VIRTUAL_ADDRESS shadowPassCBAddress,
+        const RenderItem* items,
+        UINT count);
     ID3D12RootSignature* GetRootSignature() const { return mRootSignature.Get(); }
     ID3D12PipelineState* GetTessellationPSO() const { return mTessellationPSO.Get(); }
     ID3D12RootSignature* GetTessellationRootSig() const { return mTessellationRootSig.Get(); }
@@ -74,6 +85,8 @@ private:
     void BuildDeferredPSO();
     void BuildTessellationPSO();
     void BuildTessellationRootSignature();
+    void BuildShadowRootSignature();
+    void BuildShadowPSO();
 
 private:
     ID3D12Device* md3dDevice;
@@ -102,4 +115,7 @@ private:
 
     ComPtr<ID3D12PipelineState> mTessellationPSO;
     ComPtr<ID3D12RootSignature> mTessellationRootSig;
+
+    ComPtr<ID3D12RootSignature> mShadowRootSig;
+    ComPtr<ID3D12PipelineState> mShadowPSO;
 };

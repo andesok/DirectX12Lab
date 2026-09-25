@@ -19,6 +19,9 @@
       <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\geometry_vs.cso</FullPath>
     </ContentFile>
     <ContentFile>
+      <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\shadow_vs.cso</FullPath>
+    </ContentFile>
+    <ContentFile>
       <FullPath>D:\Projects_C++\DirectX12Lab\x64\Debug\tessellation_ds.cso</FullPath>
     </ContentFile>
     <ContentFile>

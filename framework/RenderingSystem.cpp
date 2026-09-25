@@ -8,6 +8,8 @@ void RenderingSystem::Initialize() {
     BuildDeferredPSO();
     BuildTessellationRootSignature();
     BuildTessellationPSO();
+    BuildShadowRootSignature();
+    BuildShadowPSO();
 }
 
 RenderingSystem::RenderingSystem(
@@ -260,7 +262,7 @@ void RenderingSystem::DrawItems(ID3D12GraphicsCommandList* cmdList,
 void RenderingSystem::BuildDeferredRootSignature()
 {
     // Root signature для deferred lighting pass
-    CD3DX12_ROOT_PARAMETER slotRootParameter[4];
+    CD3DX12_ROOT_PARAMETER slotRootParameter[6];
 
     // 3 текстуры G-Buffer
     CD3DX12_DESCRIPTOR_RANGE srvTable;
@@ -276,7 +278,38 @@ void RenderingSystem::BuildDeferredRootSignature()
     samplerTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, 1, 0);
     slotRootParameter[3].InitAsDescriptorTable(1, &samplerTable);
 
-    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(4, slotRootParameter, 0, nullptr,
+    // Слот 4: карта теней (Texture2DArray, t4)
+    CD3DX12_DESCRIPTOR_RANGE shadowTable;
+    shadowTable.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 4);
+    slotRootParameter[4].InitAsDescriptorTable(1, &shadowTable);
+
+    // Слот 5: константы каскадов (b1)
+    slotRootParameter[5].InitAsConstantBufferView(1);
+
+    // Сэмплеры сравнения для теней: s1 — линейный (PCF), s2 — точечный (без PCF).
+    // Белый бордер = за пределами карты тени нет.
+    CD3DX12_STATIC_SAMPLER_DESC shadowSamplers[2] =
+    {
+        CD3DX12_STATIC_SAMPLER_DESC(1,
+            D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            0.0f, 16,
+            D3D12_COMPARISON_FUNC_LESS_EQUAL,
+            D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE),
+        CD3DX12_STATIC_SAMPLER_DESC(2,
+            D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER,
+            0.0f, 16,
+            D3D12_COMPARISON_FUNC_LESS_EQUAL,
+            D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE)
+    };
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(6, slotRootParameter,
+        _countof(shadowSamplers), shadowSamplers,
         D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serializedRootSig = nullptr;
@@ -337,7 +370,9 @@ void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
     GBuffer* gBuffer,
     D3D12_GPU_VIRTUAL_ADDRESS passCBAddress,
     D3D12_GPU_VIRTUAL_ADDRESS lightBufferAddress,
-    UINT numLights)
+    UINT numLights,
+    D3D12_GPU_DESCRIPTOR_HANDLE shadowMapSrv,
+    D3D12_GPU_VIRTUAL_ADDRESS cascadeCBAddress)
 {
     gBuffer->TransitionToShaderResource(cmdList);
 
@@ -361,6 +396,11 @@ void RenderingSystem::EndFrame(ID3D12GraphicsCommandList* cmdList,
     // Слот 2: Sampler
     cmdList->SetGraphicsRootDescriptorTable(3,
         samplerHeap->GetGPUDescriptorHandleForHeapStart());
+
+    // Слот 4: карта теней, слот 5: константы каскадов
+    cmdList->SetGraphicsRootDescriptorTable(4, shadowMapSrv);
+    cmdList->SetGraphicsRootConstantBufferView(5, cascadeCBAddress);
+
     cmdList->RSSetViewports(1, &mViewport);
     cmdList->RSSetScissorRects(1, &mScissor);
     cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -514,4 +554,111 @@ void RenderingSystem::BuildTessellationRootSignature()
         serializedRootSig->GetBufferSize(),
         IID_PPV_ARGS(&mTessellationRootSig)
     ));
+}
+
+// =====================================================================
+// КАСКАДНЫЕ ТЕНИ
+// =====================================================================
+
+void RenderingSystem::BuildShadowRootSignature()
+{
+    // b0 — мировая матрица объекта, b1 — ViewProj каскада
+    CD3DX12_ROOT_PARAMETER slotRootParameter[2];
+    slotRootParameter[0].InitAsConstantBufferView(0);
+    slotRootParameter[1].InitAsConstantBufferView(1);
+
+    CD3DX12_ROOT_SIGNATURE_DESC rootSigDesc(2, slotRootParameter, 0, nullptr,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    ComPtr<ID3DBlob> serializedRootSig = nullptr;
+    ComPtr<ID3DBlob> errorBlob = nullptr;
+    HRESULT hr = D3D12SerializeRootSignature(&rootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1,
+        serializedRootSig.GetAddressOf(), errorBlob.GetAddressOf());
+    if (errorBlob != nullptr)
+    {
+        ::OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+    }
+    ThrowIfFailed(hr);
+
+    ThrowIfFailed(md3dDevice->CreateRootSignature(0,
+        serializedRootSig->GetBufferPointer(),
+        serializedRootSig->GetBufferSize(),
+        IID_PPV_ARGS(&mShadowRootSig)));
+}
+
+void RenderingSystem::BuildShadowPSO()
+{
+    auto vs = d3dUtil::CompileShader(L"Shaders\\shadow_vs.hlsl", nullptr, "main", "vs_5_0");
+
+    // Из вершины нужна только позиция (stride берётся из VBV = sizeof(Vertex))
+    D3D12_INPUT_ELEMENT_DESC inputLayout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = { inputLayout, _countof(inputLayout) };
+    psoDesc.pRootSignature = mShadowRootSig.Get();
+    psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    psoDesc.PS = { nullptr, 0 };   // только глубина
+
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    // Аппаратный сдвиг глубины против shadow acne.
+    // Для D32_FLOAT: bias = DepthBias * 2^(exp(z) - 23) + SlopeScaledDepthBias * maxSlope
+    psoDesc.RasterizerState.DepthBias = 5000;
+    psoDesc.RasterizerState.DepthBiasClamp = 0.0f;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = 2.0f;
+    // В Sponza много односторонней геометрии (шторы, плоскости) — не отсекаем грани
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 0;
+    psoDesc.RTVFormats[0] = DXGI_FORMAT_UNKNOWN;
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count = 1;
+    psoDesc.SampleDesc.Quality = 0;
+
+    ThrowIfFailed(md3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mShadowPSO)));
+}
+
+void RenderingSystem::DrawShadowCascade(ID3D12GraphicsCommandList* cmdList,
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv,
+    const D3D12_VIEWPORT& viewport,
+    const D3D12_RECT& scissor,
+    D3D12_GPU_VIRTUAL_ADDRESS shadowPassCBAddress,
+    const RenderItem* items,
+    UINT count)
+{
+    // Рендер-таргетов нет — пишем только в глубину слоя каскада
+    cmdList->OMSetRenderTargets(0, nullptr, FALSE, &dsv);
+    cmdList->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    cmdList->RSSetViewports(1, &viewport);
+    cmdList->RSSetScissorRects(1, &scissor);
+
+    cmdList->SetPipelineState(mShadowPSO.Get());
+    cmdList->SetGraphicsRootSignature(mShadowRootSig.Get());
+    cmdList->SetGraphicsRootConstantBufferView(1, shadowPassCBAddress);
+    cmdList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    const MeshGeometry* boundMesh = nullptr;
+    for (UINT i = 0; i < count; ++i)
+    {
+        const RenderItem& item = items[i];
+        if (item.Mesh != boundMesh)
+        {
+            auto vbv = item.Mesh->VertexBufferView();
+            auto ibv = item.Mesh->IndexBufferView();
+            cmdList->IASetVertexBuffers(0, 1, &vbv);
+            cmdList->IASetIndexBuffer(&ibv);
+            boundMesh = item.Mesh;
+        }
+
+        cmdList->SetGraphicsRootConstantBufferView(0, item.CBAddress);
+        cmdList->DrawIndexedInstanced(item.IndexCount, 1,
+            item.StartIndexLocation, item.BaseVertexLocation, 0);
+    }
 }

@@ -48,6 +48,7 @@ bool App::Initialize()
 
     BuildDescriptorHeaps();
     BuildConstantBuffers();
+    BuildShadowResources();   // карта теней, SRV в слоте kShadowSrvSlot, буферы констант
 
     mPassCB = std::make_unique<UploadBuffer<PassConstants>>(md3dDevice.Get(), 1, true);
     mTessCB = std::make_unique<UploadBuffer<TessellationConstants>>(md3dDevice.Get(), 1, true);
@@ -62,7 +63,9 @@ bool App::Initialize()
     // 1. Направленный свет
     Light dirLight;
     dirLight.Type = LIGHT_TYPE_DIRECTIONAL;
-    dirLight.Strength = { 2.0f, 2.0f, 2.0f };
+    // Направление теперь нормализуется (UpdateSun). Раньше |{2,-1,0}| = 2.24
+    // фактически усиливало свет, поэтому Strength немного подняли.
+    dirLight.Strength = { 3.0f, 3.0f, 3.0f };
     dirLight.Direction = { 2.0f, -1.0f, 0.0f };
     mLights.push_back(dirLight);
     mMainLight = &mLights.back();
@@ -137,7 +140,7 @@ bool App::Initialize()
     const XMFLOAT3 cameraPosition = mCamera->GetPosition3f();
     mCamera->LookAt(XMLoadFloat3(&cameraPosition), XMLoadFloat3(&mSceneCenter),
         XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-    mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
+    mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, 10000.0f);
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
@@ -160,7 +163,7 @@ void App::OnResize()
 
     if (mCamera)
     {
-        mCamera->SetLens(0.25f * MathHelper::Pi, AspectRatio(), 0.1f, 10000.0f);
+        mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, 10000.0f);
     }
 }
 
@@ -199,6 +202,16 @@ void App::Update(const GameTimer& gt)
     // Отсечение + заполнение константных буферов только для видимых объектов
     UpdateCulling(gt.TotalTime());
 
+    // ===== Каскадные тени =====
+    if (WasKeyPressed('H')) mShadowsEnabled = !mShadowsEnabled;
+    if (WasKeyPressed('V')) mShowCascades = !mShowCascades;
+    if (WasKeyPressed('P')) mPcfRadius = (mPcfRadius + 1) % 4;
+    if (WasKeyPressed(VK_OEM_4)) mCascadeLambda = (std::max)(0.0f, mCascadeLambda - 0.1f); // [
+    if (WasKeyPressed(VK_OEM_6)) mCascadeLambda = (std::min)(1.0f, mCascadeLambda + 0.1f); // ]
+
+    UpdateSun(dt);
+    UpdateShadows();
+
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.View, XMMatrixTranspose(view));
     XMStoreFloat4x4(&passConstants.Proj, XMMatrixTranspose(proj));
@@ -231,6 +244,30 @@ void App::Draw(const GameTimer& gt)
 {
     ThrowIfFailed(mDirectCmdListAlloc->Reset());
     ThrowIfFailed(mCommandList->Reset(mDirectCmdListAlloc.Get(), nullptr));
+
+    // ============================================
+    // 0. SHADOW PASS: по проходу глубины на каскад
+    // ============================================
+    if (mShadowsEnabled)
+    {
+        mShadowMap->TransitionToDepthWrite(mCommandList.Get());
+
+        const UINT passCBSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ShadowPassConstants));
+        const D3D12_GPU_VIRTUAL_ADDRESS passCBBase = mShadowPassCB->Resource()->GetGPUVirtualAddress();
+
+        for (UINT c = 0; c < kCascadeCount; ++c)
+        {
+            mRenderSystem->DrawShadowCascade(mCommandList.Get(),
+                mShadowMap->Dsv(c),
+                mShadowMap->Viewport(),
+                mShadowMap->Scissor(),
+                passCBBase + (UINT64)c * passCBSize,
+                mShadowDrawLists[c].data(),
+                (UINT)mShadowDrawLists[c].size());
+        }
+
+        mShadowMap->TransitionToShaderResource(mCommandList.Get());
+    }
 
     mRenderSystem->BeginFrame(mCommandList.Get(), mScreenViewport, mScissorRect,
         mGBuffer.get(), DepthStencilView());
@@ -347,7 +384,9 @@ void App::Draw(const GameTimer& gt)
         mGBuffer.get(),
         mPassCB->Resource()->GetGPUVirtualAddress(),
         mLightBuffer->Resource()->GetGPUVirtualAddress(),
-        (UINT)mLights.size());
+        (UINT)mLights.size(),
+        mShadowMap->Srv(),
+        mCascadeCB->Resource()->GetGPUVirtualAddress());
 
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -1224,4 +1263,160 @@ void App::UpdateCulling(float totalTime)
         mCullStats.NodeTests, mCullStats.ObjectTests,
         mCullTimeMs);
     mMainWndCaption = caption;
+}
+
+
+// =====================================================================
+// ДЗ №5: КАСКАДНЫЕ КАРТЫ ТЕНЕЙ
+// =====================================================================
+
+void App::BuildShadowResources()
+{
+    mShadowMap = std::make_unique<CascadedShadowMap>(md3dDevice.Get(), kShadowMapSize, kCascadeCount);
+
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mShadowMap->BuildSrv(
+        CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), kShadowSrvSlot, descriptorSize),
+        CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), kShadowSrvSlot, descriptorSize));
+
+    // Мировые матрицы всех объектов — один раз (сцена статична).
+    // Индекс слота = индекс объекта, поэтому любой каскад может нарисовать любой объект.
+    const UINT objectCount = (std::max)(1u, (UINT)mSceneObjects.size());
+    mShadowObjectCB = std::make_unique<UploadBuffer<ShadowObjectConstants>>(md3dDevice.Get(), objectCount, true);
+    for (UINT i = 0; i < (UINT)mSceneObjects.size(); ++i)
+    {
+        ShadowObjectConstants c;
+        XMStoreFloat4x4(&c.World, XMMatrixTranspose(XMLoadFloat4x4(&mSceneObjects[i].World)));
+        mShadowObjectCB->CopyData(i, c);
+    }
+
+    mShadowPassCB = std::make_unique<UploadBuffer<ShadowPassConstants>>(md3dDevice.Get(), kCascadeCount, true);
+    mCascadeCB = std::make_unique<UploadBuffer<CascadeConstants>>(md3dDevice.Get(), 1, true);
+
+    for (auto& list : mShadowDrawLists)
+        list.reserve(mSceneObjects.size());
+    mShadowCasters.reserve(mSceneObjects.size());
+}
+
+void App::UpdateSun(float dt)
+{
+    const float rotSpeed = 0.8f * dt;
+    if (d3dUtil::IsKeyDown(VK_LEFT))  mSunAzimuth -= rotSpeed;
+    if (d3dUtil::IsKeyDown(VK_RIGHT)) mSunAzimuth += rotSpeed;
+    if (d3dUtil::IsKeyDown(VK_UP))    mSunElevation += rotSpeed;
+    if (d3dUtil::IsKeyDown(VK_DOWN))  mSunElevation -= rotSpeed;
+    mSunElevation = (std::max)(0.15f, (std::min)(1.5f, mSunElevation));
+
+    // Направление, КУДА светит солнце (вниз)
+    const float ce = cosf(mSunElevation);
+    XMVECTOR dir = XMVector3Normalize(XMVectorSet(
+        ce * cosf(mSunAzimuth), -sinf(mSunElevation), ce * sinf(mSunAzimuth), 0.0f));
+    XMStoreFloat3(&mSunDir, dir);
+
+    if (!mLights.empty())
+        mLights[0].Direction = mSunDir;   // тот же вектор уходит в StructuredBuffer света
+}
+
+void App::UpdateShadows()
+{
+    if (!mCamera || !mShadowMap) return;
+
+    // ---- 1. Разбиение на каскады и матрицы света ----
+    const BoundingBox sceneBounds = [this]()
+        {
+            BoundingBox b;
+            BoundingBox::CreateFromPoints(b, XMLoadFloat3(&mSceneMin), XMLoadFloat3(&mSceneMax));
+            return b;
+        }();
+
+    mShadowMap->UpdateCascades(mCamera->GetView(), kCameraFovY, AspectRatio(), kCameraNear,
+        mShadowNear, mShadowFar, mCascadeLambda, mSunDir, sceneBounds);
+
+    CascadeConstants cc;
+    float splits[4] = { FLT_MAX, FLT_MAX, FLT_MAX, FLT_MAX };
+    float texels[4] = { 0, 0, 0, 0 };
+
+    const UINT objCBSize = d3dUtil::CalcConstantBufferByteSize(sizeof(ShadowObjectConstants));
+    const D3D12_GPU_VIRTUAL_ADDRESS objCBBase = mShadowObjectCB->Resource()->GetGPUVirtualAddress();
+
+    for (UINT c = 0; c < kCascadeCount; ++c)
+    {
+        const XMMATRIX lightViewProj = XMLoadFloat4x4(&mShadowMap->LightViewProj(c));
+
+        ShadowPassConstants sp;
+        XMStoreFloat4x4(&sp.LightViewProj, XMMatrixTranspose(lightViewProj));
+        mShadowPassCB->CopyData(c, sp);
+
+        cc.LightViewProj[c] = sp.LightViewProj;
+        splits[c] = mShadowMap->SplitFar(c);
+        texels[c] = mShadowMap->TexelWorldSize(c);
+
+        // ---- 2. Отсечение отбрасывающих тень (переиспользуем ДЗ №4) ----
+        mShadowDrawLists[c].clear();
+        mShadowCasterCount[c] = 0;
+        if (!mShadowsEnabled) continue;
+
+        mShadowCasters.clear();
+        if (!mFrustumCullingEnabled)
+        {
+            for (UINT i = 0; i < (UINT)mSceneObjects.size(); ++i)
+                mShadowCasters.push_back(i);
+        }
+        else
+        {
+            // Ортопроекция тоже даёт z в [0, w] — Frustum работает без изменений
+            Frustum lightFrustum;
+            lightFrustum.ExtractFromViewProj(lightViewProj);
+
+            if (mUseOctree)
+            {
+                CullStats stats;
+                mOctree.Query(lightFrustum, mShadowCasters, stats);
+            }
+            else
+            {
+                for (UINT i = 0; i < (UINT)mSceneObjects.size(); ++i)
+                    if (lightFrustum.IsVisible(mSceneObjects[i].Bounds))
+                        mShadowCasters.push_back(i);
+            }
+        }
+
+        for (UINT idx : mShadowCasters)
+        {
+            const SceneObject& obj = mSceneObjects[idx];
+            RenderItem item;
+            item.Mesh = obj.Mesh;
+            item.IndexCount = obj.IndexCount;
+            item.StartIndexLocation = obj.StartIndexLocation;
+            item.BaseVertexLocation = obj.BaseVertexLocation;
+            item.CBAddress = objCBBase + (UINT64)idx * objCBSize;
+            mShadowDrawLists[c].push_back(item);
+        }
+        mShadowCasterCount[c] = (UINT)mShadowDrawLists[c].size();
+    }
+
+    // ---- 3. Константы для прохода освещения ----
+    for (UINT c = kCascadeCount; c < 4; ++c)
+        cc.LightViewProj[c] = MathHelper::Identity4x4();
+
+    cc.SplitDepths = { splits[0], splits[1], splits[2], splits[3] };
+    cc.TexelWorldSize = { texels[0], texels[1], texels[2], texels[3] };
+    cc.LightDir = mSunDir;
+    cc.ShadowTexelUV = 1.0f / (float)kShadowMapSize;
+    cc.ShadowsEnabled = mShadowsEnabled ? 1 : 0;
+    cc.PcfRadius = mPcfRadius;
+    cc.ShowCascades = mShowCascades ? 1 : 0;
+    cc.CascadeCount = (int)kCascadeCount;
+    mCascadeCB->CopyData(0, cc);
+
+    // ---- 4. Статистика в заголовок ----
+    wchar_t buf[256];
+    swprintf_s(buf, L" || Shadows[H]: %s | PCF[P]: %s | Lambda[ ]: %.1f | Cascades[V] | Casters: %u/%u/%u/%u | Splits: %.0f/%.0f/%.0f/%.0f",
+        mShadowsEnabled ? L"ON" : L"OFF",
+        mPcfRadius == 0 ? L"off" : (mPcfRadius == 1 ? L"3x3" : (mPcfRadius == 2 ? L"5x5" : L"7x7")),
+        mCascadeLambda,
+        mShadowCasterCount[0], mShadowCasterCount[1], mShadowCasterCount[2], mShadowCasterCount[3],
+        splits[0], splits[1], splits[2], splits[3]);
+    mMainWndCaption += buf;
 }

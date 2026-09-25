@@ -95,6 +95,9 @@
     <ClInclude Include="headers\Frustum.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="headers\Shadowmap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\geometry_vs.hlsl" />
@@ -105,5 +108,6 @@
     <FxCompile Include="Shaders\tessellation_hs.hlsl" />
     <FxCompile Include="Shaders\tessellation_ds.hlsl" />
     <FxCompile Include="Shaders\tessellation_ps.hlsl" />
+    <FxCompile Include="Shaders\shadow_vs.hlsl" />
   </ItemGroup>
 </Project>

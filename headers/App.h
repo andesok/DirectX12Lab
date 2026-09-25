@@ -10,6 +10,7 @@
 #include "../headers/LightData.h"
 #include "../headers/Frustum.h"
 #include "../headers/Octree.h"
+#include "../headers/ShadowMap.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -20,6 +21,7 @@ using namespace DirectX;
 using namespace DirectX::PackedVector;
 
 static constexpr UINT kCBVSlot = 0;
+static constexpr UINT kShadowSrvSlot = 1;    // свободный слот кучи -> SRV карты теней
 static constexpr UINT kGBufferSrvBase = 2;
 static constexpr UINT kTextureSrvBase = 5;
 
@@ -81,6 +83,38 @@ struct SceneObject
     bool IsWell = false;         // рисуется тесселяцией, если она включена
 };
 
+// ===== Каскадные тени =====
+static constexpr UINT kCascadeCount = 4;
+static constexpr UINT kShadowMapSize = 2048;
+static constexpr float kCameraFovY = 0.785398163f; // 0.25 * Pi
+static constexpr float kCameraNear = 0.1f;
+
+// b0 в shadow_vs.hlsl (записывается один раз — сцена статична)
+struct ShadowObjectConstants
+{
+    XMFLOAT4X4 World = MathHelper::Identity4x4();
+};
+
+// b1 в shadow_vs.hlsl (по одному на каскад)
+struct ShadowPassConstants
+{
+    XMFLOAT4X4 LightViewProj = MathHelper::Identity4x4();
+};
+
+// b1 в deferred_ps.hlsl — раскладка совпадает с cbCascades
+struct CascadeConstants
+{
+    XMFLOAT4X4 LightViewProj[4];
+    XMFLOAT4 SplitDepths = { 0, 0, 0, 0 };
+    XMFLOAT4 TexelWorldSize = { 0, 0, 0, 0 };
+    XMFLOAT3 LightDir = { 0, -1, 0 };
+    float ShadowTexelUV = 0.0f;
+    int ShadowsEnabled = 1;
+    int PcfRadius = 1;
+    int ShowCascades = 0;
+    int CascadeCount = kCascadeCount;
+};
+
 struct ObjectConstants
 {
     XMFLOAT4X4 WorldViewProj = MathHelper::Identity4x4();
@@ -113,12 +147,20 @@ private:
 
     void BuildModelGeometry(std::string modelPath, std::string baseDir);
     void BuildModelGeometryLegacy(std::string modelPath, std::string baseDir);
+    void LoadTextureToArray(const std::wstring& path, UINT arrayIndex);
+    void CreateTextureArraySRV();
+    void LoadAllTexturesLegacy();
 
     // ===== ДЗ №4: объекты сцены и отсечение =====
     void BuildScatterGeometry();
     void BuildSceneObjects();
     void UpdateCulling(float totalTime);
     bool WasKeyPressed(int vkey);
+
+    // ===== ДЗ №5: каскадные тени =====
+    void BuildShadowResources();
+    void UpdateSun(float dt);
+    void UpdateShadows();
 
 private:
     std::unique_ptr<Camera> mCamera;
@@ -207,4 +249,27 @@ private:
     XMFLOAT4X4 mFrozenViewProj = MathHelper::Identity4x4();
 
     bool mKeyWasDown[256] = {};
+
+    // ============================================
+    // ДЗ №5: КАСКАДНЫЕ КАРТЫ ТЕНЕЙ
+    // ============================================
+    std::unique_ptr<CascadedShadowMap> mShadowMap;
+    std::unique_ptr<UploadBuffer<ShadowObjectConstants>> mShadowObjectCB; // World для каждого объекта
+    std::unique_ptr<UploadBuffer<ShadowPassConstants>> mShadowPassCB;     // ViewProj каждого каскада
+    std::unique_ptr<UploadBuffer<CascadeConstants>> mCascadeCB;           // для прохода освещения
+
+    std::vector<RenderItem> mShadowDrawLists[kCascadeCount];
+    std::vector<UINT> mShadowCasters;
+    UINT mShadowCasterCount[kCascadeCount] = {};
+
+    bool  mShadowsEnabled = true;    // H
+    bool  mShowCascades = false;     // V
+    int   mPcfRadius = 1;            // P: 0 (без PCF) -> 1 (3x3) -> 2 (5x5) -> 3 (7x7)
+    float mCascadeLambda = 0.75f;    // [ и ] : 0 = равномерно, 1 = логарифмически
+    float mShadowNear = 5.0f;        // диапазон теней в единицах сцены
+    float mShadowFar = 4000.0f;
+
+    float mSunAzimuth = 0.3f;        // стрелки влево/вправо
+    float mSunElevation = 1.2f;      // стрелки вверх/вниз (радианы над горизонтом)
+    XMFLOAT3 mSunDir = { 0.0f, -1.0f, 0.0f };
 };
