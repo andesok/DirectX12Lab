@@ -1,5 +1,3 @@
 ﻿  App.cpp
-D:\Projects_C++\DirectX12Lab\src\App.cpp(309,24): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
-  Main.cpp
-  Generating Code...
+D:\Projects_C++\DirectX12Lab\src\App.cpp(323,24): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
   DirectX12Lab.vcxproj -> D:\Projects_C++\DirectX12Lab\x64\Debug\DirectX12Lab.exe

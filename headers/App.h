@@ -12,6 +12,7 @@
 #include "../headers/Octree.h"
 #include "../headers/ShadowMap.h"
 #include "../headers/ParticleSystem.h"
+#include "../headers/PostProcess.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -82,6 +83,7 @@ struct SceneObject
     XMFLOAT4X4 World = MathHelper::Identity4x4();
     BoundingBox Bounds;          // AABB в мировых координатах
     bool IsWell = false;         // рисуется тесселяцией, если она включена
+    bool IsScatter = false;      // один из разбросанных кубов
 };
 
 // ===== Каскадные тени =====
@@ -254,6 +256,21 @@ private:
     XMFLOAT4X4 mFrozenViewProj = MathHelper::Identity4x4();
 
     bool mKeyWasDown[256] = {};
+
+    // Доп. задание: кубы рисуются только в карту теней, на экран — нет (клавиша I)
+    bool mCubesShadowOnly = false;
+
+    // ============================================
+    // ДЗ №7: ПОСТ-ОБРАБОТКА
+    // ============================================
+    void BuildPostProcess();
+    void UpdatePostProcess();
+
+    std::unique_ptr<PostProcess> mPost;
+    UINT mPostSrvSlot = 0;          // SRV SceneColor в mCbvHeap (после дескрипторов частиц)
+    bool mBloomEnabled = true;      // клавиша 1
+    bool mChromaticEnabled = true;  // клавиша 2
+    int  mPostDebugView = 0;        // клавиша 3: итог / альбедо / нормали / расстояние / bloom
 
     // ============================================
     // ДЗ №5: КАСКАДНЫЕ КАРТЫ ТЕНЕЙ

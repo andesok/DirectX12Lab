@@ -92,6 +92,7 @@ bool App::Initialize()
     mRenderSystem->SetGBuffer(mGBuffer.get());
 
     BuildParticles();   // буферы частиц, UAV со счётчиками, compute/graphics PSO
+    BuildPostProcess(); // SceneColor + PSO пост-обработки
 
     UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     UINT rtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -167,6 +168,12 @@ void App::OnResize()
     {
         mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, 10000.0f);
     }
+
+    // D3DApp::OnResize уже сделал Flush — GPU простаивает, можно пересоздать текстуру
+    if (mPost)
+    {
+        mPost->OnResize((UINT)mClientWidth, (UINT)mClientHeight);
+    }
 }
 
 void App::Update(const GameTimer& gt)
@@ -197,6 +204,7 @@ void App::Update(const GameTimer& gt)
     if (WasKeyPressed('C')) mFrustumCullingEnabled = !mFrustumCullingEnabled;
     if (WasKeyPressed('O')) mUseOctree = !mUseOctree;
     if (WasKeyPressed('F')) mFreezeFrustum = !mFreezeFrustum;
+    if (WasKeyPressed('I')) mCubesShadowOnly = !mCubesShadowOnly;   // кубы: только тень
 
     XMMATRIX view = mCamera->GetView();
     XMMATRIX proj = mCamera->GetProj();
@@ -217,6 +225,12 @@ void App::Update(const GameTimer& gt)
     // ===== Частицы =====
     if (WasKeyPressed('B')) mFountain.Enabled = !mFountain.Enabled;
     UpdateParticles(dt, gt.TotalTime());
+
+    // ===== Пост-обработка =====
+    if (WasKeyPressed('1')) mBloomEnabled = !mBloomEnabled;
+    if (WasKeyPressed('2')) mChromaticEnabled = !mChromaticEnabled;
+    if (WasKeyPressed('3')) mPostDebugView = (mPostDebugView + 1) % 5;
+    UpdatePostProcess();
 
     PassConstants passConstants;
     XMStoreFloat4x4(&passConstants.View, XMMatrixTranspose(view));
@@ -380,15 +394,14 @@ void App::Draw(const GameTimer& gt)
     }
 
     // ============================================
-    // LIGHTING PASS
+    // LIGHTING PASS -> SceneColor (промежуточная текстура, а не back buffer)
     // ============================================
-    auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
-        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-    mCommandList->ResourceBarrier(1, &transition);
+    mPost->TransitionToRenderTarget(mCommandList.Get());
 
-    mCommandList->ClearRenderTargetView(CurrentBackBufferView(), Colors::CornflowerBlue, 0, nullptr);
-
-    mCommandList->OMSetRenderTargets(1, &CurrentBackBufferView(), true, nullptr);
+    const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+    const D3D12_CPU_DESCRIPTOR_HANDLE sceneRtv = mPost->SceneColorRtv();
+    mCommandList->ClearRenderTargetView(sceneRtv, black, 0, nullptr);
+    mCommandList->OMSetRenderTargets(1, &sceneRtv, true, nullptr);
 
     mRenderSystem->EndFrame(
         mCommandList.Get(),
@@ -401,6 +414,22 @@ void App::Draw(const GameTimer& gt)
         (UINT)mLights.size(),
         mShadowMap->Srv(),
         mCascadeCB->Resource()->GetGPUVirtualAddress());
+
+    mPost->TransitionToShaderResource(mCommandList.Get());
+
+    // ============================================
+    // POST-PROCESS PASS: SceneColor + G-Buffer -> back buffer
+    // ============================================
+    auto transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
+        D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    mCommandList->ResourceBarrier(1, &transition);
+
+    // G-Buffer после EndFrame уже в состоянии чтения; его SRV лежат в слотах 2..4.
+    // Execute сам делает bloom-проходы и затем рисует финальный кадр в back buffer.
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gBufferSrv(
+        mCbvHeap->GetGPUDescriptorHandleForHeapStart(), kGBufferSrvBase, descriptorSize);
+    mPost->Execute(mCommandList.Get(), mCbvHeap.Get(), gBufferSrv,
+        CurrentBackBufferView(), mScreenViewport, mScissorRect);
 
     transition = CD3DX12_RESOURCE_BARRIER::Transition(CurrentBackBuffer(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -446,7 +475,9 @@ void App::BuildDescriptorHeaps()
     const UINT textureDescriptorCount = mUniqueTextureCount > 0 ? mUniqueTextureCount : 1;
     // После текстур — 4 UAV-дескриптора системы частиц
     mParticleDescriptorBase = kTextureSrvBase + textureDescriptorCount;
-    const UINT totalDescriptors = mParticleDescriptorBase + ParticleSystem::DescriptorCount;
+    // После частиц — 3 SRV пост-обработки: SceneColor, BloomA, BloomB
+    mPostSrvSlot = mParticleDescriptorBase + ParticleSystem::DescriptorCount;
+    const UINT totalDescriptors = mPostSrvSlot + PostProcess::SrvCount;
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
     cbvHeapDesc.NumDescriptors = totalDescriptors;
@@ -1165,6 +1196,7 @@ void App::BuildSceneObjects()
         obj.StartIndexLocation = cube.StartIndexLocation;
         obj.BaseVertexLocation = cube.BaseVertexLocation;
         obj.SRVIndex = kTextureSrvBase + distTex(rng);
+        obj.IsScatter = true;
         XMStoreFloat4x4(&obj.World, world);
 
         // Локальный AABB -> мировой AABB (Transform пересчитывает AABB по 8 углам)
@@ -1251,6 +1283,11 @@ void App::UpdateCulling(float totalTime)
         if (mEnableTessellation && obj.IsWell)
             continue; // колодец рисует проход тесселяции
 
+        // Режим «только тень»: куб не попадает в G-Buffer (на экране его нет),
+        // но в UpdateShadows он по-прежнему добавляется в карты теней
+        if (mCubesShadowOnly && obj.IsScatter)
+            continue;
+
         const XMMATRIX world = XMLoadFloat4x4(&obj.World);
 
         ObjectConstants c;
@@ -1273,10 +1310,11 @@ void App::UpdateCulling(float totalTime)
 
     // ---- Статистика в заголовок окна (обновляется раз в секунду вместе с fps) ----
     wchar_t caption[256];
-    swprintf_s(caption, L"HW4 | Culling[C]: %s | Octree[O]: %s | Freeze[F]: %s | Visible: %u/%u | NodeTests: %u | ObjTests: %u | Cull: %.3f ms",
+    swprintf_s(caption, L"HW4 | Culling[C]: %s | Octree[O]: %s | Freeze[F]: %s | CubesShadowOnly[I]: %s | Visible: %u/%u | NodeTests: %u | ObjTests: %u | Cull: %.3f ms",
         mFrustumCullingEnabled ? L"ON" : L"OFF",
         mUseOctree ? L"ON" : L"OFF",
         mFreezeFrustum ? L"ON" : L"OFF",
+        mCubesShadowOnly ? L"ON" : L"OFF",
         mCullStats.Visible, total,
         mCullStats.NodeTests, mCullStats.ObjectTests,
         mCullTimeMs);
@@ -1481,7 +1519,7 @@ void App::BuildParticles()
     mFountain.SizeMin = 0.0020f * sceneHeight;
     mFountain.SizeMax = 0.0040f * sceneHeight;
     mFountain.Bounce = 0.35f;
-    mFountain.Enabled = true;
+    mFountain.Enabled = false;
 }
 
 void App::UpdateParticles(float dt, float totalTime)
@@ -1504,5 +1542,55 @@ void App::UpdateParticles(float dt, float totalTime)
     wchar_t buf[128];
     swprintf_s(buf, L" || Fountain[B]: %s | Particles: %u/%u",
         mFountain.Enabled ? L"ON" : L"OFF", mAliveParticles, kMaxParticles);
+    mMainWndCaption += buf;
+}
+
+
+// =====================================================================
+// ДЗ №7: ПОСТ-ОБРАБОТКА
+// =====================================================================
+
+void App::BuildPostProcess()
+{
+    // Формат совпадает с RTV deferred-PSO (R8G8B8A8_UNORM), поэтому lighting pass
+    // рисует в SceneColor без изменения своего PSO
+    mPost = std::make_unique<PostProcess>(md3dDevice.Get(),
+        (UINT)mClientWidth, (UINT)mClientHeight, mBackBufferFormat);
+
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mPost->BuildDescriptors(
+        CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), mPostSrvSlot, descriptorSize),
+        CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), mPostSrvSlot, descriptorSize),
+        descriptorSize);
+}
+
+void App::UpdatePostProcess()
+{
+    if (!mPost || !mCamera) return;
+
+    PostConstants pc;
+    pc.EyePosW = mCamera->GetPosition3f();
+    pc.DebugDepthRange = 2.0f * mSceneRadius;   // для режима просмотра «расстояние»
+
+    // Bloom: сцена после tone mapping в диапазоне 0..1, освещённое солнцем ~0.6-0.8
+    pc.BloomThreshold = 1.0f;
+    pc.BloomKnee = 1.0f;
+    pc.BloomIntensity = 10.0f;
+
+    // Хроматическая аберрация: на краю кадра каналы расходятся на ~0.6% ширины
+    pc.ChromaticStrength = 0.006f;
+
+    pc.DebugView = mPostDebugView;
+    pc.BloomEnabled = mBloomEnabled ? 1 : 0;
+    pc.ChromaticEnabled = mChromaticEnabled ? 1 : 0;
+    mPost->SetConstants(pc);
+
+    static const wchar_t* kViewNames[5] = { L"Final", L"Albedo", L"Normals", L"Distance", L"BloomOnly" };
+    wchar_t buf[160];
+    swprintf_s(buf, L" || Bloom[1]: %s | Chromatic[2]: %s | View[3]: %s",
+        mBloomEnabled ? L"ON" : L"OFF",
+        mChromaticEnabled ? L"ON" : L"OFF",
+        kViewNames[mPostDebugView]);
     mMainWndCaption += buf;
 }

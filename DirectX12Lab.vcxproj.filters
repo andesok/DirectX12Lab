@@ -101,6 +101,9 @@
     <ClInclude Include="headers\ParticleSystem.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="headers\Postprocess.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="Shaders\geometry_vs.hlsl" />
@@ -117,5 +120,8 @@
     <None Include="Shaders\particles_common.hlsli" />
     <None Include="Shaders\particles_cs.hlsl" />
     <None Include="Shaders\particles_draw.hlsl" />
+    <None Include="Shaders\post_common.hlsli" />
+    <None Include="Shaders\bloom_ps.hlsl" />
+    <None Include="Shaders\postprocess_ps.hlsl" />
   </ItemGroup>
 </Project>
