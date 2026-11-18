@@ -13,6 +13,7 @@
 #include "../headers/ShadowMap.h"
 #include "../headers/ParticleSystem.h"
 #include "../headers/PostProcess.h"
+#include "../headers/Terrain.h"
 
 #define NOMINMAX
 #include <windows.h>
@@ -90,7 +91,7 @@ struct SceneObject
 static constexpr UINT kCascadeCount = 4;
 static constexpr UINT kShadowMapSize = 2048;
 static constexpr float kCameraFovY = 0.785398163f; // 0.25 * Pi
-static constexpr float kCameraNear = 0.1f;
+static constexpr float kCameraNear = 1.0f;     // было 0.1: дальняя плоскость теперь далеко (ландшафт), нужна точность глубины
 
 // b0 в shadow_vs.hlsl (записывается один раз — сцена статична)
 struct ShadowObjectConstants
@@ -154,18 +155,15 @@ private:
     void CreateTextureArraySRV();
     void LoadAllTexturesLegacy();
 
-    // ===== ДЗ №4: объекты сцены и отсечение =====
     void BuildScatterGeometry();
     void BuildSceneObjects();
     void UpdateCulling(float totalTime);
     bool WasKeyPressed(int vkey);
 
-    // ===== ДЗ №5: каскадные тени =====
     void BuildShadowResources();
     void UpdateSun(float dt);
     void UpdateShadows();
 
-    // ===== ДЗ №6: частицы =====
     void BuildParticles();
     void UpdateParticles(float dt, float totalTime);
 
@@ -218,9 +216,7 @@ private:
 
     std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> mTextureUploadKeepAlive;
     std::vector<MeshTexture> mTextures;
-    // ============================================
-    // TEXTURE2DARRAY РЕСУРСЫ
-    // ============================================
+
     UINT mTextureCount = 0;                        // Количество текстур в массиве
     UINT mTextureWidth = 0;                       // Ширина текстур (все одинаковые)
     UINT mTextureHeight = 0;                      // Высота текстур (все одинаковые)
@@ -232,9 +228,6 @@ private:
     ComPtr<ID3D12Resource> mNormalArray;
     ComPtr<ID3D12Resource> mHeightArray;
 
-    // ============================================
-    // ДЗ №4: FRUSTUM CULLING + OCTREE
-    // ============================================
     static constexpr UINT kScatterCount = 5000;   // уменьшите, если ноутбук не тянет
 
     XMFLOAT3 mSceneMin = { 0.0f, 0.0f, 0.0f };
@@ -260,21 +253,15 @@ private:
     // Доп. задание: кубы рисуются только в карту теней, на экран — нет (клавиша I)
     bool mCubesShadowOnly = false;
 
-    // ============================================
-    // ДЗ №7: ПОСТ-ОБРАБОТКА
-    // ============================================
     void BuildPostProcess();
     void UpdatePostProcess();
 
     std::unique_ptr<PostProcess> mPost;
     UINT mPostSrvSlot = 0;          // SRV SceneColor в mCbvHeap (после дескрипторов частиц)
-    bool mBloomEnabled = true;      // клавиша 1
-    bool mChromaticEnabled = true;  // клавиша 2
+    bool mBloomEnabled = false;      // клавиша 1
+    bool mChromaticEnabled = false;  // клавиша 2
     int  mPostDebugView = 0;        // клавиша 3: итог / альбедо / нормали / расстояние / bloom
 
-    // ============================================
-    // ДЗ №5: КАСКАДНЫЕ КАРТЫ ТЕНЕЙ
-    // ============================================
     std::unique_ptr<CascadedShadowMap> mShadowMap;
     std::unique_ptr<UploadBuffer<ShadowObjectConstants>> mShadowObjectCB; // World для каждого объекта
     std::unique_ptr<UploadBuffer<ShadowPassConstants>> mShadowPassCB;     // ViewProj каждого каскада
@@ -295,12 +282,20 @@ private:
     float mSunElevation = 1.2f;      // стрелки вверх/вниз (радианы над горизонтом)
     XMFLOAT3 mSunDir = { 0.0f, -1.0f, 0.0f };
 
-    // ============================================
-    // ДЗ №6: GPU-ЧАСТИЦЫ (ФОНТАН)
-    // ============================================
     static constexpr UINT kMaxParticles = 200000;
     std::unique_ptr<ParticleSystem> mParticles;
     FountainSettings mFountain;
     UINT mParticleDescriptorBase = 0;   // первый из 4 UAV-дескрипторов в mCbvHeap
     UINT mAliveParticles = 0;
+
+    void BuildTerrain();
+    void UpdateTerrain();
+
+    std::unique_ptr<Terrain> mTerrain;
+    UINT mTerrainSrvSlot = 0;           // 3 SRV (высоты, нормали, цвет) в mCbvHeap — после пост-обработки
+    bool mTerrainEnabled = true;        // T
+    bool mTerrainDebugLod = false;      // L — раскраска уровней LOD
+    bool mTerrainWireframe = false;     // K — каркас
+    XMFLOAT3 mFrozenEye = { 0.0f, 0.0f, 0.0f };   // позиция камеры на момент заморозки (F)
+    float mCameraFar = 10000.0f;        // в BuildTerrain увеличивается под размер ландшафта
 };

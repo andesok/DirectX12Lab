@@ -93,6 +93,7 @@ bool App::Initialize()
 
     BuildParticles();   // буферы частиц, UAV со счётчиками, compute/graphics PSO
     BuildPostProcess(); // SceneColor + PSO пост-обработки
+    BuildTerrain();     // тайлы карты высот -> текстуры, квадродерево, PSO ландшафта
 
     UINT cbvSrvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     UINT rtvDescriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -143,7 +144,7 @@ bool App::Initialize()
     const XMFLOAT3 cameraPosition = mCamera->GetPosition3f();
     mCamera->LookAt(XMLoadFloat3(&cameraPosition), XMLoadFloat3(&mSceneCenter),
         XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
-    mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, 10000.0f);
+    mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, mCameraFar);
 
     // Execute the initialization commands.
     ThrowIfFailed(mCommandList->Close());
@@ -153,6 +154,7 @@ bool App::Initialize()
     // Wait until initialization is complete.
     FlushCommandQueue();
     mTextureUploadKeepAlive.clear();
+    mTerrain->ReleaseUploaders();   // копирование на GPU завершено
     return true;
 }
 
@@ -166,7 +168,7 @@ void App::OnResize()
 
     if (mCamera)
     {
-        mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, 10000.0f);
+        mCamera->SetLens(kCameraFovY, AspectRatio(), kCameraNear, mCameraFar);
     }
 
     // D3DApp::OnResize уже сделал Flush — GPU простаивает, можно пересоздать текстуру
@@ -181,6 +183,7 @@ void App::Update(const GameTimer& gt)
     if (!mCamera) return;
     float dt = gt.DeltaTime();
     float speed = 800.0f * dt;
+    if (d3dUtil::IsKeyDown(VK_SHIFT)) speed *= 6.0f;   // ландшафт большой — Shift для быстрого полёта
 
     DirectX::XMVECTOR look = mCamera->GetLook();
     DirectX::XMVECTOR right = mCamera->GetRight();
@@ -212,6 +215,14 @@ void App::Update(const GameTimer& gt)
     // Отсечение + заполнение константных буферов только для видимых объектов
     UpdateCulling(gt.TotalTime());
 
+    // ===== Ландшафт: выбор LOD по квадродереву + отсечение (после UpdateCulling — нужна mCullFrustum) =====
+    if (WasKeyPressed('T')) mTerrainEnabled = !mTerrainEnabled;
+    if (WasKeyPressed('L')) mTerrainDebugLod = !mTerrainDebugLod;
+    if (WasKeyPressed('K')) mTerrainWireframe = !mTerrainWireframe;
+    if (WasKeyPressed(VK_OEM_MINUS)) mTerrain->SetLodDistance(mTerrain->LodDistance() - 0.5f);  // -
+    if (WasKeyPressed(VK_OEM_PLUS))  mTerrain->SetLodDistance(mTerrain->LodDistance() + 0.5f);  // =
+    UpdateTerrain();
+
     // ===== Каскадные тени =====
     if (WasKeyPressed('H')) mShadowsEnabled = !mShadowsEnabled;
     if (WasKeyPressed('V')) mShowCascades = !mShowCascades;
@@ -224,12 +235,8 @@ void App::Update(const GameTimer& gt)
 
     // ===== Частицы =====
     if (WasKeyPressed('B')) mFountain.Enabled = !mFountain.Enabled;
-    UpdateParticles(dt, gt.TotalTime());
+    //UpdateParticles(dt, gt.TotalTime());
 
-    // ===== Пост-обработка =====
-    if (WasKeyPressed('1')) mBloomEnabled = !mBloomEnabled;
-    if (WasKeyPressed('2')) mChromaticEnabled = !mChromaticEnabled;
-    if (WasKeyPressed('3')) mPostDebugView = (mPostDebugView + 1) % 5;
     UpdatePostProcess();
 
     PassConstants passConstants;
@@ -310,6 +317,10 @@ void App::Draw(const GameTimer& gt)
 
     // Непрозрачные частицы пишутся в тот же G-Buffer => получают освещение и тени
     mParticles->Draw(mCommandList.Get());
+
+    // Ландшафт — в тот же G-Buffer: освещение и тени от солнца получает в общем проходе
+    if (mTerrainEnabled)
+        mTerrain->Draw(mCommandList.Get(), mTerrainWireframe);
 
     // ============================================
     // 2. ТЕССЕЛЯЦИЯ КОЛОДЦА
@@ -477,7 +488,9 @@ void App::BuildDescriptorHeaps()
     mParticleDescriptorBase = kTextureSrvBase + textureDescriptorCount;
     // После частиц — 3 SRV пост-обработки: SceneColor, BloomA, BloomB
     mPostSrvSlot = mParticleDescriptorBase + ParticleSystem::DescriptorCount;
-    const UINT totalDescriptors = mPostSrvSlot + PostProcess::SrvCount;
+    // После пост-обработки — 3 SRV ландшафта: высоты, нормали, цвет
+    mTerrainSrvSlot = mPostSrvSlot + PostProcess::SrvCount;
+    const UINT totalDescriptors = mTerrainSrvSlot + Terrain::SrvCount;
 
     D3D12_DESCRIPTOR_HEAP_DESC cbvHeapDesc;
     cbvHeapDesc.NumDescriptors = totalDescriptors;
@@ -1232,7 +1245,10 @@ void App::UpdateCulling(float totalTime)
     // Пирамида для отсечения. При «заморозке» остаётся старая —
     // можно отлететь и посмотреть, что рисуется только её содержимое.
     if (!mFreezeFrustum)
+    {
         XMStoreFloat4x4(&mFrozenViewProj, viewProj);
+        mFrozenEye = mCamera->GetPosition3f();   // ландшафт выбирает LOD от этой точки
+    }
 
     const auto t0 = std::chrono::high_resolution_clock::now();
 
@@ -1500,18 +1516,17 @@ void App::BuildParticles()
             mParticleDescriptorBase, descriptorSize),
         descriptorSize);
 
-    // ---- Параметры фонтана — от размеров сцены, чтобы подходили к масштабу Sponza ----
     const float sceneHeight = mSceneMax.y - mSceneMin.y;
-    const float fountainHeight = 0.45f * sceneHeight;     // высота струи
-    const float gravity = 0.6f * sceneHeight;             // ~900 ед/с^2 для Sponza
-    const float speed = sqrtf(2.0f * gravity * fountainHeight); // v = sqrt(2gh)
+    const float fountainHeight = 0.45f * sceneHeight;
+    const float gravity = 0.6f * sceneHeight;
+    const float speed = sqrtf(2.0f * gravity * fountainHeight);
 
     mFountain.Position = { mSceneCenter.x, mSceneMin.y + 0.01f * sceneHeight, mSceneCenter.z };
     mFountain.FloorY = mSceneMin.y;
     mFountain.Gravity = gravity;
     mFountain.SpeedMin = 0.80f * speed;
     mFountain.SpeedMax = 1.00f * speed;
-    mFountain.ConeAngle = 0.22f;                          // ~12.5 градуса от вертикали
+    mFountain.ConeAngle = 0.22f;
     mFountain.EmitterRadius = 0.006f * sceneHeight;
     mFountain.EmitRate = 25000.0f;
     mFountain.LifetimeMin = 3.0f;
@@ -1519,14 +1534,13 @@ void App::BuildParticles()
     mFountain.SizeMin = 0.0020f * sceneHeight;
     mFountain.SizeMax = 0.0040f * sceneHeight;
     mFountain.Bounce = 0.35f;
-    mFountain.Enabled = false;
+    mFountain.Enabled = true;
 }
 
 void App::UpdateParticles(float dt, float totalTime)
 {
     if (!mParticles || !mCamera) return;
 
-    // Сколько частиц было живо после прошлого кадра (GPU уже закончил — Draw() делает Flush)
     mAliveParticles = mParticles->ReadAliveCount();
 
     XMFLOAT3 right, up, look;
@@ -1534,7 +1548,7 @@ void App::UpdateParticles(float dt, float totalTime)
     const XMVECTOR R = XMVector3Normalize(mCamera->GetRight());
     XMStoreFloat3(&look, L);
     XMStoreFloat3(&right, R);
-    XMStoreFloat3(&up, XMVector3Normalize(XMVector3Cross(L, R)));   // LH: up = look x right
+    XMStoreFloat3(&up, XMVector3Normalize(XMVector3Cross(L, R)));
 
     const XMMATRIX viewProj = mCamera->GetView() * mCamera->GetProj();
     mParticles->Update(dt, totalTime, mFountain, viewProj, right, up, look);
@@ -1545,15 +1559,8 @@ void App::UpdateParticles(float dt, float totalTime)
     mMainWndCaption += buf;
 }
 
-
-// =====================================================================
-// ДЗ №7: ПОСТ-ОБРАБОТКА
-// =====================================================================
-
 void App::BuildPostProcess()
 {
-    // Формат совпадает с RTV deferred-PSO (R8G8B8A8_UNORM), поэтому lighting pass
-    // рисует в SceneColor без изменения своего PSO
     mPost = std::make_unique<PostProcess>(md3dDevice.Get(),
         (UINT)mClientWidth, (UINT)mClientHeight, mBackBufferFormat);
 
@@ -1571,14 +1578,14 @@ void App::UpdatePostProcess()
 
     PostConstants pc;
     pc.EyePosW = mCamera->GetPosition3f();
-    pc.DebugDepthRange = 2.0f * mSceneRadius;   // для режима просмотра «расстояние»
+    pc.DebugDepthRange = 2.0f * mSceneRadius;
 
-    // Bloom: сцена после tone mapping в диапазоне 0..1, освещённое солнцем ~0.6-0.8
+    // Bloom
     pc.BloomThreshold = 1.0f;
     pc.BloomKnee = 1.0f;
     pc.BloomIntensity = 10.0f;
 
-    // Хроматическая аберрация: на краю кадра каналы расходятся на ~0.6% ширины
+    // Хроматическая аберрация
     pc.ChromaticStrength = 0.006f;
 
     pc.DebugView = mPostDebugView;
@@ -1593,4 +1600,68 @@ void App::UpdatePostProcess()
         mChromaticEnabled ? L"ON" : L"OFF",
         kViewNames[mPostDebugView]);
     mMainWndCaption += buf;
+}
+
+// =====================================================================
+// ДЗ (TERRAIN): ЛАНДШАФТ — ТАЙЛЫ КАРТЫ ВЫСОТ, КВАДРОДЕРЕВО LOD, FRUSTUM CULLING
+// =====================================================================
+
+void App::BuildTerrain()
+{
+    TerrainSettings s;
+    s.Folder = L"Terrain/";                    // тайлы из генератора: height_x0_y0.png, ...
+    s.ShaderPath = L"Shaders/terrain.hlsl";    // поправь, если шейдеры лежат в другой папке
+    // Размеры — относительно Sponza, чтобы не зависеть от единиц модели
+    s.WorldSize = mSceneRadius * 12.0f;        // вся карта
+    s.HeightScale = mSceneRadius * 1.5f;       // перепад высот
+    s.FlattenRadius = mSceneRadius * 1.1f;     // ровная площадка под Sponza (0 — не выравнивать)
+    s.GridDim = 32;                            // общая сетка 33x33 вершины
+    s.LodDistance = 4.0f;                      // меняется клавишами - / =
+
+    // Центр карты — под центром Sponza, поверхность в центре — на уровне её пола
+    const XMFLOAT3 anchor = { mSceneCenter.x, mSceneMin.y, mSceneCenter.z };
+    const DXGI_FORMAT rtvFormats[3] = {
+        mGBuffer->GetFormat(0), mGBuffer->GetFormat(1), mGBuffer->GetFormat(2) };
+
+    mTerrain = std::make_unique<Terrain>();
+    mTerrain->Initialize(md3dDevice.Get(), mCommandList.Get(), s, anchor,
+        rtvFormats, mDepthStencilFormat, /*msaa*/ false, 0);
+
+    const UINT descriptorSize = md3dDevice->GetDescriptorHandleIncrementSize(
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    mTerrain->BuildSrvs(
+        CD3DX12_CPU_DESCRIPTOR_HANDLE(mCbvHeap->GetCPUDescriptorHandleForHeapStart(), mTerrainSrvSlot, descriptorSize),
+        CD3DX12_GPU_DESCRIPTOR_HANDLE(mCbvHeap->GetGPUDescriptorHandleForHeapStart(), mTerrainSrvSlot, descriptorSize),
+        descriptorSize);
+
+    // Дальняя плоскость — чтобы ландшафт был виден целиком
+    mCameraFar = (std::max)(10000.0f, s.WorldSize * 1.5f);
+}
+
+void App::UpdateTerrain()
+{
+    if (!mTerrain || !mCamera) return;
+
+    // LOD выбирается от mFrozenEye (= камера, пока не нажата F),
+    // отсечение — по mCullFrustum из UpdateCulling (тоже замораживается по F).
+    // Клавиша C выключает отсечение и для ландшафта.
+    const XMMATRIX viewProj = mCamera->GetView() * mCamera->GetProj();
+    mTerrain->Update(mFrozenEye, viewProj,
+        mFrustumCullingEnabled ? &mCullFrustum : nullptr,
+        mTerrainDebugLod);
+
+    const TerrainSelectStats& st = mTerrain->Stats();
+
+    std::wstring perLevel;
+    for (UINT l = 0; l < mTerrain->LevelCount(); ++l)
+        perLevel += L" " + std::to_wstring(st.PerLevel[l]);
+
+    wchar_t buf[512];
+    swprintf_s(buf, L"TERRAIN[T]: %s | LOD colors[L] | Wire[K] | LodDist[-/=]: %.1f | Draws: %u | Culled nodes: %u | Visited: %u | Per level (0=fine):%s | Select: %.3f ms || ",
+        mTerrainEnabled ? L"ON" : L"OFF",
+        mTerrain->LodDistance(),
+        st.DrawCalls, st.NodesCulled, st.NodesVisited,
+        perLevel.c_str(),
+        mTerrain->SelectMs());
+    mMainWndCaption = buf + mMainWndCaption;   // в начало заголовка, чтобы было видно
 }
